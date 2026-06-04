@@ -149,4 +149,4 @@ HOST=192.168.1.50 PORT=8080 bun run start
 
 ## License
 
-MIT
+Apache License 2.0
