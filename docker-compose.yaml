@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  library-web-viewer:
+    image: ghcr.io/jinkert-com/library-web-viewer:latest
+    container_name: library-web-viewer
+    restart: unless-stopped
+    ports:
+      # Format is "HostPort:ContainerPort"
+      # Change the FIRST number to adjust the port exposed on your machine (e.g., "8080:4321")
+      - "4321:4321"
+    environment:
+      # Required: The path to your library folder IN THE CONTAINER
+      - LIBRARY_PATH=/library
+
+      # Optional: Restrict what domains/IPs can access the app (e.g. your-nas.local,192.168.1.50)
+      # If this is omitted, the app defaults to accepting all incoming requests
+      # - ALLOWED_HOSTS=
+
+      # Optional thumbnail scaling/quality settings
+      - THUMBNAIL_HEIGHT=400
+      - THUMBNAIL_QUALITY=80
+      - THUMBNAIL_WEBP=true
+    volumes:
+      # Mount your library folder to the container (Format: HostPath:ContainerPath)
+      # Read-only (:ro) is highly recommended for safety
+      - "/mnt/Media/NAMEOFLIBRARY:/library:ro"
+
+      # Persist the internal SQLite database so it doesn't rebuild on every container restart
+      - ./library-db:/app/db

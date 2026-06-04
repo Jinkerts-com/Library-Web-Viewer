@@ -1,0 +1,94 @@
+---
+
+---
+
+<div
+    id="modal"
+    class="hidden fixed inset-0 z-[3000] w-full h-full bg-black/85 dark:bg-black/95 text-center p-4 box-border"
+>
+    <div
+        id="modal-prev"
+        class="modal-nav prev fixed top-1/2 left-0 -translate-y-1/2 text-4xl text-white cursor-pointer select-none p-4 bg-black/20 hover:bg-black/50 transition-colors z-10"
+    >
+        &#10094;
+    </div>
+    <div
+        id="modal-next"
+        class="modal-nav next fixed top-1/2 right-0 -translate-y-1/2 text-4xl text-white cursor-pointer select-none p-4 bg-black/20 hover:bg-black/50 transition-colors z-10"
+    >
+        &#10095;
+    </div>
+
+    <div
+        id="modal-content-wrapper"
+        class="flex items-center justify-center w-full h-full relative pointer-events-none"
+    >
+        <!-- Pointer events auto required for children interaction since wrapper overlays -->
+        <div
+            id="modal-image-container"
+            class="flex items-center justify-center flex-grow h-full overflow-hidden pointer-events-auto"
+        >
+        </div>
+
+        <div
+            id="modal-info-panel"
+            class="hidden w-[300px] bg-white dark:bg-zinc-900 text-gray-800 dark:text-gray-200 p-5 h-full shadow-[-2px_0_5px_rgba(0,0,0,0.1)] dark:shadow-[-2px_0_5px_rgba(0,0,0,0.4)] flex flex-col text-left absolute right-0 top-0 z-20 overflow-y-auto transition-transform duration-300 pointer-events-auto"
+        >
+            <h3 id="info-name" class="mt-0 break-all font-bold text-lg mb-4">
+            </h3>
+            <div class="info-row mb-2 text-sm">
+                <strong>Size:</strong>
+                <span id="info-size"></span>
+            </div>
+            <div class="info-row mb-2 text-sm">
+                <strong>Type:</strong>
+                <span id="info-ext"></span>
+            </div>
+            <div class="info-row mb-2 text-sm">
+                <strong>Created:</strong>
+                <span id="info-date"></span>
+            </div>
+            <div
+                class="info-row mb-2 text-sm hidden border-t border-gray-600 pt-2 mt-2"
+                id="info-annotation-row"
+            >
+                <strong>Description:</strong>
+                <div
+                    id="info-annotation"
+                    class="whitespace-pre-wrap mt-1 text-gray-500 dark:text-gray-400"
+                >
+                </div>
+            </div>
+            <div class="info-tags flex flex-wrap gap-1.5 mt-2" id="info-tags">
+            </div>
+        </div>
+    </div>
+
+    <button
+        id="info-toggle-btn"
+        class="absolute top-5 right-20 bg-black/50 hover:bg-black/80 text-white border border-white rounded-full w-[30px] h-[30px] cursor-pointer z-25 font-bold flex items-center justify-center transition-colors pointer-events-auto"
+        title="Toggle Info">i</button
+    >
+    <span
+        class="close-button absolute top-4 right-9 text-gray-100 text-4xl font-bold cursor-pointer z-50 hover:text-white"
+        >&times;</span
+    >
+</div>
+
+<style>
+    @reference "../styles/global.css";
+
+    :global(#modal-image-container img),
+    :global(#modal-image-container video) {
+        @apply max-w-[95vw] max-h-[95vh] object-contain transition-all duration-300;
+    }
+
+    :global(.modal-nav.disabled) {
+        @apply opacity-20 cursor-default pointer-events-none;
+    }
+
+    :global(.info-tag) {
+        @apply bg-blue-500 text-white px-1.5 py-0.5 rounded text-xs cursor-pointer hover:bg-blue-600;
+    }
+
+</style>

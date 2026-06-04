@@ -1,0 +1,32 @@
+@import "tailwindcss";
+@config "../../tailwind.config.js";
+
+/* Additional global overrides can go here */
+:root {
+   --bg-color: #1a1a1a;
+   --text-color: #e0e0e0;
+}
+
+/* Dark Mode Scrollbar */
+.dark ::-webkit-scrollbar {
+   width: 10px;
+   height: 10px;
+}
+
+.dark ::-webkit-scrollbar-track {
+   @apply bg-zinc-900;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+   @apply bg-zinc-700 rounded-full border-2 border-zinc-900;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+   @apply bg-zinc-600;
+}
+
+/* Firefox */
+.dark {
+   scrollbar-width: thin;
+   scrollbar-color: #3f3f46 #18181b; /* zinc-700 zinc-900 */
+}

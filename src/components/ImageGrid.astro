@@ -1,0 +1,12 @@
+---
+import ImageGridReact from "./ImageGrid.tsx";
+---
+
+<div
+    class="main-content ml-0 md:ml-72 p-4 min-h-screen bg-gray-100 dark:bg-zinc-900 transition-all duration-300"
+>
+    <!-- Menu Toggle moved to React component -->
+
+    <!-- React Grid Component -->
+    <ImageGridReact client:only="react" />
+</div>

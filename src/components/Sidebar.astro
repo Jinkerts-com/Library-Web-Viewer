@@ -1,0 +1,282 @@
+---
+
+---
+
+<div
+    class="sidebar fixed top-0 left-0 h-screen w-72 bg-white dark:bg-zinc-900 shadow-xl z-50 flex flex-col transition-transform duration-300 transform -translate-x-full md:translate-x-0"
+>
+    <div class="sidebar-content flex-1 overflow-y-auto p-4 space-y-4">
+        <h2
+            class="text-xl font-bold text-gray-800 dark:text-gray-100 border-b border-gray-200 dark:border-zinc-700 pb-2 mb-4"
+        >
+            Library Viewer
+        </h2>
+
+        <div class="sidebar-search mb-4">
+            <input
+                type="text"
+                id="search-box"
+                placeholder="Search..."
+                class="w-full p-2 border border-gray-300 dark:border-zinc-700 rounded bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400 dark:placeholder-zinc-500"
+            />
+        </div>
+
+        <!-- Filter Controls -->
+        <div class="filter-controls flex gap-2 mb-4">
+            <button
+                id="clear-filters-btn"
+                class="control-btn flex-1 flex items-center justify-center gap-1.5 p-2 text-sm border border-gray-300 dark:border-zinc-700 rounded-md bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors"
+                title="Clear all filters"
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    class="opacity-70"
+                >
+                    <path
+                        d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"
+                    ></path>
+                </svg>
+                Clear
+            </button>
+            <button
+                id="refresh-btn"
+                class="control-btn flex-1 flex items-center justify-center gap-1.5 p-2 text-sm border border-gray-300 dark:border-zinc-700 rounded-md bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors"
+                title="Refresh results"
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    class="opacity-70"
+                >
+                    <path
+                        d="M23 4v6h-6M1 20v-6h6M20.49 15a9 9 0 11-2.12-9.36L23 10"
+                    ></path>
+                </svg>
+                Refresh
+            </button>
+        </div>
+
+        <div class="mb-4">
+            <button
+                id="scan-btn"
+                class="w-full flex items-center justify-center gap-1.5 p-2 text-sm font-medium border border-blue-500 rounded-md bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                title="Trigger Library Scan"
+            >
+                <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    class="lucide lucide-scan"
+                    ><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path
+                        d="M17 3h2a2 2 0 0 1 2 2v2"></path><path
+                        d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path
+                        d="M7 21H5a2 2 0 0 1-2-2v-2"></path></svg
+                >
+                Scan Library
+            </button>
+        </div>
+
+        <script>
+            const scanBtn = document.getElementById(
+                "scan-btn",
+            ) as HTMLButtonElement | null;
+            if (scanBtn) {
+                scanBtn.addEventListener("click", async () => {
+                    try {
+                        const originalText = scanBtn.innerHTML;
+                        scanBtn.innerHTML = "Scanning...";
+                        scanBtn.disabled = true;
+
+                        await fetch("/api/scan", { method: "POST" });
+
+                        // Optional: Rely on socket/events for progress, or just timeout reset
+                        setTimeout(() => {
+                            scanBtn.innerHTML = originalText;
+                            scanBtn.disabled = false;
+                        }, 2000);
+                    } catch (e) {
+                        console.error("Scan failed", e);
+                        scanBtn.innerHTML = "Error";
+                    }
+                });
+            }
+        </script>
+
+        <!-- Sorting Controls -->
+        <div
+            class="sort-controls space-y-3 pb-4 border-b border-gray-200 dark:border-zinc-700"
+        >
+            <div class="sort-group">
+                <label
+                    for="layout-select"
+                    class="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1"
+                    >Layout</label
+                >
+                <select
+                    id="layout-select"
+                    class="w-full p-1.5 border border-gray-300 dark:border-zinc-700 rounded bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                    <option value="masonry">Waterfall</option>
+                    <option value="justified">Justified</option>
+                    <option value="grid">Grid (Square)</option>
+                </select>
+            </div>
+            <div class="sort-group">
+                <label
+                    for="sort-by"
+                    class="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1"
+                    >Sort By</label
+                >
+                <select
+                    id="sort-by"
+                    class="w-full p-1.5 border border-gray-300 dark:border-zinc-700 rounded bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                    <option value="modificationTime">Date Modified</option>
+                    <option value="name">Name</option>
+                    <option value="size">Size</option>
+                </select>
+            </div>
+            <div class="sort-group">
+                <label
+                    for="sort-order"
+                    class="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1"
+                    >Order</label
+                >
+                <select
+                    id="sort-order"
+                    class="w-full p-1.5 border border-gray-300 dark:border-zinc-700 rounded bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                </select>
+            </div>
+        </div>
+
+        <h3
+            class="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-4 mb-2"
+        >
+            Folders
+        </h3>
+        <div
+            id="folder-list"
+            class="text-sm text-gray-700 dark:text-gray-300 space-y-0.5"
+        >
+        </div>
+
+        <h3
+            class="text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-6 mb-2"
+        >
+            Tags
+        </h3>
+        <input
+            type="text"
+            id="tag-search"
+            placeholder="Search tags..."
+            class="sidebar-search-small w-full p-1.5 mb-2 border border-gray-300 dark:border-zinc-700 rounded bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-gray-200 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+        <div id="tag-list" class="text-sm text-gray-700 dark:text-gray-300">
+        </div>
+    </div>
+
+    <div
+        class="theme-switch-wrapper p-4 border-t border-gray-200 dark:border-zinc-700 flex items-center"
+    >
+        <label
+            class="theme-switch relative inline-block w-12 h-6"
+            for="theme-checkbox"
+        >
+            <input
+                type="checkbox"
+                id="theme-checkbox"
+                class="opacity-0 w-0 h-0 peer"
+            />
+            <div
+                class="slider round absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 transition-all duration-300 rounded-full peer-checked:bg-blue-600 before:absolute before:content-[''] before:h-5 before:w-5 before:left-0.5 before:bottom-0.5 before:bg-white before:transition-all before:duration-300 before:rounded-full peer-checked:before:translate-x-6"
+            >
+            </div>
+        </label>
+        <span class="ml-3 text-sm text-gray-600 dark:text-gray-300 font-medium"
+            >Dark Mode</span
+        >
+    </div>
+</div>
+<div
+    id="sidebar-overlay"
+    class="fixed inset-0 bg-black/50 z-40 hidden transition-opacity"
+>
+</div>
+
+<style>
+    /* 
+  Some dynamic classes are added by JS (e.g. .active, .open). 
+  We keep minimal CSS for these specific JS interactions or complex pseudo-elements 
+  that are cleaner in CSS than Tailwind classes (though Tailwind can do them too).
+  
+  Ideally, we'd update JS to toggle 'translate-x-0' instead of '.open', 
+  but for now we map existing classes to Tailwind-like behaviors or keep them.
+*/
+    @reference "../styles/global.css";
+
+    .sidebar.open {
+        @apply translate-x-0;
+    }
+
+    #sidebar-overlay.active {
+        @apply block;
+    }
+
+    /* Folder & Tag Items mostly handled by JS generation, but target them here or global */
+    :global(.folder-item),
+    :global(.tag-item) {
+        @apply flex items-center px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-gray-100 dark:hover:bg-zinc-800;
+    }
+
+    :global(.folder-item.active),
+    :global(.tag-item.active) {
+        @apply bg-blue-500 text-white hover:bg-blue-600 dark:hover:bg-blue-600;
+    }
+    :global(.folder-item.active .caret) {
+        @apply text-white; /* Ensure caret visibility on active */
+    }
+
+    :global(.tag-item.included) {
+        @apply bg-green-500 text-white hover:bg-green-600;
+    }
+
+    :global(.tag-item.excluded) {
+        @apply bg-red-500 text-white line-through hover:bg-red-600;
+    }
+
+    :global(.folder-item.locked) {
+        @apply opacity-60;
+    }
+
+    /* Icons */
+    :global(.caret) {
+        @apply w-5 h-5 fill-current text-gray-400 dark:text-gray-500 transition-transform duration-200;
+    }
+    :global(.caret:hover) {
+        @apply bg-gray-200 dark:bg-zinc-700 rounded;
+    }
+    :global(.caret.expanded) {
+        @apply rotate-90;
+    }
+    :global(.lock-icon) {
+        @apply w-4 h-4 fill-current ml-auto opacity-50;
+    }
+</style>
