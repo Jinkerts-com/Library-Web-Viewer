@@ -18,7 +18,7 @@ I am not a security expert, and this app has not been audited for security. Use 
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) or [Bun](https://bun.sh/) (Recommended)
+- [Node.js](https://nodejs.org/) 22 or newer, or [Bun](https://bun.sh/) (recommended)
 
 ## Setup
 
