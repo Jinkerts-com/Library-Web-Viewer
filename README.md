@@ -67,7 +67,7 @@ version: '3.8'
 
 services:
   library-web-viewer:
-    image: ghcr.io/jinkert-com/library-web-viewer:latest
+    image: ghcr.io/jinkerts-com/library-web-viewer:latest
     container_name: library-web-viewer
     restart: unless-stopped
     ports:
@@ -111,7 +111,7 @@ docker run -d \
   -e LIBRARY_PATH=/library \
   -v "/mnt/Media/NAMEOFLIBRARY:/library:ro" \
   -v ./library-db:/app/db \
-  ghcr.io/jinkert-com/library-web-viewer:latest
+  ghcr.io/jinkerts-com/library-web-viewer:latest
 ```
 
 ## Usage

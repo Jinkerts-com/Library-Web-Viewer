@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/jinkert-com/library-web-viewer
+  IMAGE_NAME: ghcr.io/jinkerts-com/library-web-viewer
 
 jobs:
   build:
