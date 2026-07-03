@@ -17,6 +17,8 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     server: {
+      // Defaults to accepting any Host header so self-hosted LAN setups work
+      // out of the box; set ALLOWED_HOSTS (comma-separated) to restrict.
       allowedHosts: process.env.ALLOWED_HOSTS ? process.env.ALLOWED_HOSTS.split(',') : true
     },
     ssr: {

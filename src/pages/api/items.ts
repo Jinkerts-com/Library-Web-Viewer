@@ -1,38 +1,66 @@
 
 import { db, folderCache, findFolderById, getAllSubFolderIds } from '../../lib/db';
+import { getUnlockedFolderIds } from '../../lib/unlock';
 
 import type { APIRoute } from 'astro';
+
+interface ItemRow {
+    id: string;
+    name: string;
+    ext: string;
+    tags: string;
+    folders: string;
+    palettes: string | null;
+    [key: string]: unknown;
+}
 
 export const GET: APIRoute = async ({ request }) => {
     const url = new URL(request.url);
     const search = url.searchParams.get('search');
     const tag = url.searchParams.get('tag');
     const folderId = url.searchParams.get('folderId');
-    const page = parseInt(url.searchParams.get('page') || '1');
-    const limit = parseInt(url.searchParams.get('limit') || '50');
+    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1') || 1);
+    const limit = Math.max(1, parseInt(url.searchParams.get('limit') || '50') || 50);
     const sortBy = url.searchParams.get('sortBy') || 'modificationTime';
     const sortOrder = url.searchParams.get('sortOrder') || 'desc';
     const excludedTagsStr = url.searchParams.get('excludedTags');
     const specialFilter = url.searchParams.get('specialFilter');
     const colorHex = url.searchParams.get('color');
     const colorAccuracyStr = url.searchParams.get('colorAccuracy');
-    const colorAccuracy = colorAccuracyStr ? parseInt(colorAccuracyStr) : 60;
+    const colorAccuracy = colorAccuracyStr ? parseInt(colorAccuracyStr) || 60 : 60;
 
-    // Color match helpers
     function hexToRgb(hex: string) {
         const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
         return result ? [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)] : null;
-    }
-
-    function colorDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number) {
-        return Math.sqrt(Math.pow(r2 - r1, 2) + Math.pow(g2 - g1, 2) + Math.pow(b2 - b1, 2));
     }
 
     const targetRgb = colorHex ? hexToRgb(colorHex) : null;
 
     let baseQuery = "SELECT * FROM items";
     let whereClause = " WHERE 1=1";
-    const params: any[] = [];
+    const params: (string | number)[] = [];
+
+    // Trash: deleted items are only visible in the dedicated trash view
+    if (specialFilter === 'trash') {
+        whereClause += ` AND COALESCE(isDeleted, 0) = 1`;
+    } else {
+        whereClause += ` AND COALESCE(isDeleted, 0) = 0`;
+    }
+
+    // Locked folders: hide their contents everywhere (search, All, tags,
+    // trash...) unless this client unlocked them (verified session cookie);
+    // unlocking a folder uncovers its whole subtree
+    const effectiveLockedIds = new Set(folderCache.lockedFolderIds);
+    getUnlockedFolderIds(request).forEach(id => {
+        const unlockedFolder = findFolderById(folderCache.folders, id);
+        if (unlockedFolder) getAllSubFolderIds(unlockedFolder).forEach(sub => effectiveLockedIds.delete(sub));
+    });
+    const lockedIds = Array.from(effectiveLockedIds);
+    if (lockedIds.length) {
+        const placeholders = lockedIds.map(() => '?').join(', ');
+        whereClause += ` AND NOT EXISTS (SELECT 1 FROM json_each(items.folders) WHERE value IN (${placeholders}))`;
+        params.push(...lockedIds);
+    }
 
     // Special Filters Logic
     if (specialFilter === 'uncategorized') {
@@ -43,7 +71,7 @@ export const GET: APIRoute = async ({ request }) => {
 
     // Filter by Folder
     if (folderId) {
-        if (folderCache.lockedFolderIds.has(folderId)) {
+        if (effectiveLockedIds.has(folderId)) {
             return new Response(JSON.stringify({ items: [], totalItems: 0, relevantTags: [] }), { headers: { "Content-Type": "application/json" } });
         }
 
@@ -54,10 +82,10 @@ export const GET: APIRoute = async ({ request }) => {
             if (targetFolder) {
                 const subIds = getAllSubFolderIds(targetFolder);
                 const ids = Array.from(subIds);
-                const folderClauses = ids.map(() => `folders LIKE ?`).join(" OR ");
-                if (folderClauses) {
-                    whereClause += ` AND (${folderClauses})`;
-                    ids.forEach(id => params.push(`%${id}%`));
+                if (ids.length) {
+                    const placeholders = ids.map(() => '?').join(', ');
+                    whereClause += ` AND EXISTS (SELECT 1 FROM json_each(items.folders) WHERE value IN (${placeholders}))`;
+                    params.push(...ids);
                 }
             } else {
                 // Folder not found
@@ -65,18 +93,32 @@ export const GET: APIRoute = async ({ request }) => {
             }
         } else {
             // Flat - Only this folder
-            whereClause += ` AND folders LIKE ?`;
-            params.push(`%${folderId}%`);
+            whereClause += ` AND EXISTS (SELECT 1 FROM json_each(items.folders) WHERE value = ?)`;
+            params.push(folderId);
         }
     }
 
-    // Filter by Tag
+    // Snapshot of the view context (trash/locked/special/folder) before the
+    // narrowing filters below — the contextual tag list is built from this so
+    // it reflects the folder being viewed, not the current tag/search/color
+    // selections
+    const contextClause = whereClause;
+    const contextParams = [...params];
+
+    // Filter by Tag: "all" requires every selected tag, "any" matches items
+    // with at least one of them
     if (tag) {
         const tags = tag.split(',');
-        tags.forEach(t => {
-            whereClause += ` AND EXISTS (SELECT 1 FROM json_each(items.tags) WHERE value = ?)`;
-            params.push(t);
-        });
+        if (url.searchParams.get('tagRule') === 'any') {
+            const clause = tags.map(() => `EXISTS (SELECT 1 FROM json_each(items.tags) WHERE value = ?)`).join(' OR ');
+            whereClause += ` AND (${clause})`;
+            params.push(...tags);
+        } else {
+            tags.forEach(t => {
+                whereClause += ` AND EXISTS (SELECT 1 FROM json_each(items.tags) WHERE value = ?)`;
+                params.push(t);
+            });
+        }
     }
 
     // Filter by Excluded Tags
@@ -95,78 +137,64 @@ export const GET: APIRoute = async ({ request }) => {
         params.push(term, term, term);
     }
 
-    // Sort
-    const allowedSort = ["name", "size", "modificationTime"];
-    let safeSort = allowedSort.includes(sortBy) ? sortBy : "modificationTime";
-    const safeOrder = sortOrder === "asc" ? "ASC" : "DESC";
-
-    if (specialFilter === 'random') {
-        safeSort = "RANDOM()";
+    // Filter by Color (squared distance to any palette color, computed in SQL
+    // so pagination stays in the database)
+    if (targetRgb) {
+        const [r, g, b] = targetRgb;
+        whereClause += ` AND items.palettes IS NOT NULL AND json_valid(items.palettes) AND EXISTS (
+            SELECT 1 FROM json_each(items.palettes)
+            WHERE (json_extract(value, '$.color[0]') - ?) * (json_extract(value, '$.color[0]') - ?)
+                + (json_extract(value, '$.color[1]') - ?) * (json_extract(value, '$.color[1]') - ?)
+                + (json_extract(value, '$.color[2]') - ?) * (json_extract(value, '$.color[2]') - ?)
+                < ?
+        )`;
+        params.push(r, r, g, g, b, b, colorAccuracy * colorAccuracy);
     }
 
-    const orderClause = specialFilter === 'random' ? ` ORDER BY RANDOM()` : ` ORDER BY ${safeSort} ${safeOrder}`;
+    // Sort (keys map to fixed SQL expressions; never interpolate user input)
+    const sortExpressions: Record<string, string> = {
+        modificationTime: "modificationTime",
+        btime: "COALESCE(btime, modificationTime)",
+        name: "name COLLATE NOCASE",
+        ext: "ext COLLATE NOCASE",
+        size: "size",
+        dimensions: "(width * height)",
+        star: "COALESCE(star, 0)",
+        duration: "COALESCE(duration, 0)"
+    };
+    const sortExpr = sortExpressions[sortBy] ?? sortExpressions.modificationTime;
+    const safeOrder = sortOrder === "asc" ? "ASC" : "DESC";
 
-    // console.log(`[API] /items request. params:`, { page, limit, folderId, sortBy });
+    // Secondary key keeps ties (same rating, no duration, etc.) in a stable order
+    const orderClause = specialFilter === 'random' ? ` ORDER BY RANDOM()` : ` ORDER BY ${sortExpr} ${safeOrder}, modificationTime DESC`;
 
-    // Execute Query
+    const parseRow = (r: ItemRow) => {
+        try {
+            return { ...r, tags: JSON.parse(r.tags), folders: JSON.parse(r.folders), palettes: JSON.parse(r.palettes || '[]') };
+        } catch (e) { return r; }
+    };
+
     // Execute Query (Synchronous)
     try {
-        let totalItems = 0;
-        let items: any[] = [];
+        const countQuery = `SELECT COUNT(*) as count FROM items ${whereClause}`;
+        const countRow = db.query(countQuery).get(...params) as { count: number } | undefined;
+        const totalItems = countRow?.count || 0;
 
-        if (targetRgb) {
-            // Memory filter for Colors
-            const fullQuery = `${baseQuery} ${whereClause} ${orderClause}`;
-            const allRows = db.query(fullQuery).all(...params) as any[];
+        const paginationParams = [...params, limit, (page - 1) * limit];
+        const paginationQuery = `${baseQuery} ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
+        const rows = db.query(paginationQuery).all(...paginationParams) as ItemRow[];
 
-            const filteredRows = allRows.filter(r => {
-                try {
-                    const palettes = JSON.parse(r.palettes || '[]');
-                    for (const p of palettes) {
-                        if (p.color && p.color.length === 3) {
-                            const dist = colorDistance(targetRgb[0], targetRgb[1], targetRgb[2], p.color[0], p.color[1], p.color[2]);
-                            if (dist < colorAccuracy) return true; // dynamic threshold
-                        }
-                    }
-                    return false;
-                } catch (e) {
-                    return false;
-                }
-            });
+        const items = rows.map(parseRow);
 
-            totalItems = filteredRows.length;
-            const startIndex = (page - 1) * limit;
-            const paginatedRows = filteredRows.slice(startIndex, startIndex + limit);
-
-            items = paginatedRows.map(r => {
-                try {
-                    return { ...r, tags: JSON.parse(r.tags), folders: JSON.parse(r.folders), palettes: JSON.parse(r.palettes || '[]') };
-                } catch (e) { return r; }
-            });
-        } else {
-            // Standard SQLite Native Search
-            const countQuery = `SELECT COUNT(*) as count FROM items ${whereClause}`;
-            const countRow = db.query(countQuery).get(...params) as any;
-            totalItems = countRow?.count || 0;
-
-            const paginationParams = [...params, limit, (page - 1) * limit];
-            const paginationQuery = `${baseQuery} ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
-            const rows = db.query(paginationQuery).all(...paginationParams) as any[];
-
-            items = rows.map(r => {
-                try {
-                    return { ...r, tags: JSON.parse(r.tags), folders: JSON.parse(r.folders), palettes: JSON.parse(r.palettes || '[]') };
-                } catch (e) { return r; }
-            });
-        }
-
-        // Contextual Tags
+        // Contextual Tags (with per-context usage counts)
         let relevantTags;
+        let relevantTagCounts: Record<string, number> | undefined;
         if (page === 1) {
-            const distinctTagQuery = `SELECT DISTINCT value as tag FROM items, json_each(items.tags) ${whereClause}`;
+            const distinctTagQuery = `SELECT value as tag, COUNT(*) as count FROM items, json_each(items.tags) ${contextClause} GROUP BY value`;
             try {
-                const tagRows = db.query(distinctTagQuery).all(...params) as any[];
+                const tagRows = db.query(distinctTagQuery).all(...contextParams) as { tag: string; count: number }[];
                 relevantTags = tagRows.map(r => r.tag).sort();
+                relevantTagCounts = Object.fromEntries(tagRows.map(r => [r.tag, r.count]));
             } catch (e) {
                 relevantTags = folderCache.allTags;
             }
@@ -175,11 +203,13 @@ export const GET: APIRoute = async ({ request }) => {
         return new Response(JSON.stringify({
             items,
             totalItems,
-            relevantTags
+            relevantTags,
+            relevantTagCounts
         }), { headers: { "Content-Type": "application/json" } });
 
-    } catch (err: any) {
+    } catch (err) {
         console.error("[API] /items Error:", err);
-        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+        const message = err instanceof Error ? err.message : String(err);
+        return new Response(JSON.stringify({ error: message }), { status: 500 });
     }
 }

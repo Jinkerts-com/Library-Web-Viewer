@@ -1,3 +1,4 @@
+/// <reference types="bun" />
 import { Database } from "bun:sqlite";
 import fs from 'fs';
 import path from 'path';
@@ -29,6 +30,7 @@ export interface FolderCache {
     folders: Folder[];
     lockedFolderIds: Set<string>;
     allTags: string[];
+    tagCounts: Record<string, number>;
     tagsGroups: TagGroup[];
     lastUpdated: number;
 }
@@ -47,7 +49,7 @@ if (libPathEnv) {
     libraryPath = path.normalize(libPathEnv);
     verboseLog("Loaded configuration from environment. Library Path:", libraryPath);
 } else {
-    console.error("LIBRARY_PATH environment variable is not set. Please formulate a .env file or export it.");
+    console.error("LIBRARY_PATH environment variable is not set. Please create a .env file or export it.");
     console.warn("Continuing with an empty library path, but scans and images will not work correctly.");
 }
 
@@ -76,12 +78,16 @@ export function initDB() {
       ext TEXT,
       size INTEGER,
       modificationTime INTEGER,
+      btime INTEGER,
       width INTEGER,
       height INTEGER,
-      tags TEXT, 
-      folders TEXT, 
+      tags TEXT,
+      folders TEXT,
       description TEXT,
       palettes TEXT,
+      star INTEGER,
+      duration REAL,
+      isDeleted INTEGER,
       last_scanned INTEGER
     )`);
 
@@ -97,7 +103,24 @@ export function initDB() {
     } catch (e) {
     }
 
+    // Columns that back sorting options; when any is newly added, existing
+    // rows lack values, so reset last_scanned to force a full re-scan
+    let needsRescan = false;
+    for (const colDef of ["btime INTEGER", "star INTEGER", "duration REAL", "isDeleted INTEGER"]) {
+        try {
+            db.run(`ALTER TABLE items ADD COLUMN ${colDef}`);
+            verboseLog(`Migration: Added '${colDef.split(' ')[0]}' column.`);
+            needsRescan = true;
+        } catch (e) {
+        }
+    }
+    if (needsRescan) {
+        db.run("UPDATE items SET last_scanned = 0");
+        console.log("Schema updated with new sort columns; items will be refreshed on next scan.");
+    }
+
     db.run(`CREATE INDEX IF NOT EXISTS idx_mod_time ON items(modificationTime)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_btime ON items(btime)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_name ON items(name)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_description ON items(description)`);
     verboseLog("Indices ensured.");
@@ -109,6 +132,7 @@ export let folderCache: FolderCache = {
     folders: [],
     lockedFolderIds: new Set(),
     allTags: [],
+    tagCounts: {},
     tagsGroups: [],
     lastUpdated: 0
 };
@@ -128,15 +152,22 @@ function getLockedFolderIds(folders: Folder[]): Set<string> {
 
 export function updateTagCache() {
     try {
-        const rows = db.query("SELECT tags FROM items").all() as any[];
-        const tagSet = new Set<string>();
+        const rows = db.query("SELECT tags, folders FROM items WHERE COALESCE(isDeleted, 0) = 0").all() as { tags: string; folders: string }[];
+        const lockedIds = folderCache.lockedFolderIds;
+        const counts: Record<string, number> = {};
         rows.forEach(row => {
             try {
+                // Don't leak tags from items inside locked folders
+                if (lockedIds.size) {
+                    const folders = JSON.parse(row.folders || '[]');
+                    if (Array.isArray(folders) && folders.some((f: string) => lockedIds.has(f))) return;
+                }
                 const tags = JSON.parse(row.tags);
-                if (Array.isArray(tags)) tags.forEach((t: string) => tagSet.add(t));
+                if (Array.isArray(tags)) tags.forEach((t: string) => { counts[t] = (counts[t] || 0) + 1; });
             } catch (e) { }
         });
-        folderCache.allTags = Array.from(tagSet).sort();
+        folderCache.allTags = Object.keys(counts).sort();
+        folderCache.tagCounts = counts;
         verboseLog(`Tag cache updated. Found ${folderCache.allTags.length} unique tags.`);
     } catch (err) {
         console.error("Error updating tag cache:", err);
@@ -159,12 +190,16 @@ interface Item {
     ext: string;
     size: number;
     modificationTime: number;
+    btime?: number;
     width?: number;
     height?: number;
     tags?: string[];
     folders?: string[];
     annotation?: string;
     palettes?: any[];
+    star?: number;
+    duration?: number;
+    isDeleted?: boolean;
     [key: string]: any;
 }
 
@@ -210,7 +245,7 @@ export async function performLibraryScan() {
 
         const now = Date.now();
 
-        const queryUpsert = db.prepare(`INSERT OR REPLACE INTO items (id, name, ext, size, modificationTime, width, height, tags, folders, description, palettes, last_scanned) VALUES ($id, $name, $ext, $size, $modificationTime, $width, $height, $tags, $folders, $description, $palettes, $last_scanned)`);
+        const queryUpsert = db.prepare(`INSERT OR REPLACE INTO items (id, name, ext, size, modificationTime, btime, width, height, tags, folders, description, palettes, star, duration, isDeleted, last_scanned) VALUES ($id, $name, $ext, $size, $modificationTime, $btime, $width, $height, $tags, $folders, $description, $palettes, $star, $duration, $isDeleted, $last_scanned)`);
         const queryTouch = db.prepare(`UPDATE items SET last_scanned = $now WHERE id = $id`);
 
         let skippedCount = 0;
@@ -261,12 +296,16 @@ export async function performLibraryScan() {
                         $ext: item.ext,
                         $size: item.size,
                         $modificationTime: item.modificationTime,
+                        $btime: item.btime || item.modificationTime || 0,
                         $width: item.width || 0,
                         $height: item.height || 0,
                         $tags: JSON.stringify(item.tags || []),
                         $folders: JSON.stringify(item.folders || []),
                         $description: item.annotation || "",
                         $palettes: JSON.stringify(item.palettes || []),
+                        $star: item.star || 0,
+                        $duration: item.duration || 0,
+                        $isDeleted: item.isDeleted ? 1 : 0,
                         $last_scanned: now
                     });
                 }
@@ -387,7 +426,7 @@ async function handleFileChange(filePath: string) {
         const jsonString = await fs.promises.readFile(filePath, "utf8");
         const item = JSON.parse(jsonString) as Item;
 
-        const stmt = db.prepare(`INSERT OR REPLACE INTO items (id, name, ext, size, modificationTime, width, height, tags, folders, description, palettes, last_scanned) VALUES ($id, $name, $ext, $size, $modificationTime, $width, $height, $tags, $folders, $description, $palettes, $last_scanned)`);
+        const stmt = db.prepare(`INSERT OR REPLACE INTO items (id, name, ext, size, modificationTime, btime, width, height, tags, folders, description, palettes, star, duration, isDeleted, last_scanned) VALUES ($id, $name, $ext, $size, $modificationTime, $btime, $width, $height, $tags, $folders, $description, $palettes, $star, $duration, $isDeleted, $last_scanned)`);
 
         deleteItemCache(item.id);
         stmt.run({
@@ -396,12 +435,16 @@ async function handleFileChange(filePath: string) {
             $ext: item.ext,
             $size: item.size,
             $modificationTime: item.modificationTime,
+            $btime: item.btime || item.modificationTime || 0,
             $width: item.width || 0,
             $height: item.height || 0,
             $tags: JSON.stringify(item.tags || []),
             $folders: JSON.stringify(item.folders || []),
             $description: item.annotation || "",
             $palettes: JSON.stringify(item.palettes || []),
+            $star: item.star || 0,
+            $duration: item.duration || 0,
+            $isDeleted: item.isDeleted ? 1 : 0,
             $last_scanned: Date.now()
         });
 

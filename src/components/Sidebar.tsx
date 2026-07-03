@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { useStore } from '@nanostores/react';
+import { eagleColor } from '../lib/eagleColors';
 import {
     foldersStore,
     lockedFoldersStore,
+    unlockedFoldersStore,
+    markFoldersLocked,
     filtersStore,
     setFolderId, // Fixed name
     clearFilters, // Used for "All"
@@ -20,30 +23,41 @@ const CaretIcon = ({ expanded }: { expanded: boolean }) => (
     <svg
         className={`w-4 h-4 fill-current text-zinc-400 dark:text-zinc-500 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
         viewBox="0 0 24 24"
+        aria-hidden="true"
     >
         <path d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z"></path>
     </svg>
 );
 
 const LockIcon = () => (
-    <svg className="w-3.5 h-3.5 fill-current ml-auto opacity-50" viewBox="0 0 24 24">
+    <svg className="w-3.5 h-3.5 fill-current ml-auto opacity-50" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z" />
     </svg>
 );
 
+const UnlockedIcon = () => (
+    <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M18,1C15.24,1 13,3.24 13,6V8H4A2,2 0 0,0 2,10V20A2,2 0 0,0 4,22H16A2,2 0 0,0 18,20V10A2,2 0 0,0 16,8H15V6A3,3 0 0,1 18,3A3,3 0 0,1 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13A2,2 0 0,1 12,15A2,2 0 0,1 10,17A2,2 0 0,1 8,15A2,2 0 0,1 10,13Z" />
+    </svg>
+);
+
 // My Media Icons
-const AllIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>;
-const UncategorizedIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" /></svg>;
-const UntaggedIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>;
-const RandomIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l5 5M4 4l5 5" /></svg>; // Shuffle-like
+const AllIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>;
+const UncategorizedIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" /></svg>;
+const UntaggedIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>;
+const RandomIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l5 5M4 4l5 5" /></svg>; // Shuffle-like
+const TrashIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>;
 
 
 const FolderItem = ({ folder, depth = 0 }: { folder: Folder, depth?: number }) => {
     const filters = useStore(filtersStore);
     const lockedFolders = useStore(lockedFoldersStore);
+    const unlockedFolders = useStore(unlockedFoldersStore);
     const [expanded, setExpanded] = useState(false);
 
-    const isLocked = lockedFolders.has(folder.id);
+    const isLocked = lockedFolders.has(folder.id) && !unlockedFolders.has(folder.id);
+    // Show the re-lock control on the folder that owns the password once it's unlocked
+    const isUnlockedRoot = !!folder.hasPassword && lockedFolders.has(folder.id) && unlockedFolders.has(folder.id);
     const isActive = filters.folderId === folder.id;
     const hasChildren = folder.children && folder.children.length > 0;
 
@@ -52,20 +66,51 @@ const FolderItem = ({ folder, depth = 0 }: { folder: Folder, depth?: number }) =
         setExpanded(!expanded);
     };
 
+    const handleRelock = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+            const res = await fetch('/api/lock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folderId: folder.id })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                markFoldersLocked(data.lockedIds || [folder.id]);
+            }
+        } catch (err) {
+            console.error('Failed to lock folder', err);
+        }
+    };
+
     return (
         <>
             <div
                 className={`folder-item flex items-center px-3 py-1.5 mx-2 rounded-md cursor-pointer transition-colors text-sm ${isActive ? 'bg-blue-600 text-white' : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'} ${isLocked ? 'opacity-60' : ''}`}
                 style={{ paddingLeft: `${depth * 16 + 12}px` }}
-                onClick={() => !isLocked && setFolderId(folder.id)}
+                onClick={() => setFolderId(folder.id)}
             >
                 <div onClick={hasChildren ? handleToggle : undefined} className={`mr-1 -ml-1 ${hasChildren ? 'cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 rounded' : ''} w-4 h-4 flex items-center justify-center`}>
                     {hasChildren && <CaretIcon expanded={expanded} />}
                 </div>
-                {/* Folder Icon? */}
-                <svg className={`w-4 h-4 mr-2 ${isActive ? 'fill-white' : 'fill-blue-400'}`} viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" /></svg>
+                <svg
+                    className={`w-4 h-4 mr-2 shrink-0 ${isActive ? 'fill-white' : eagleColor(folder.iconColor) ? '' : 'fill-blue-400'}`}
+                    style={!isActive && eagleColor(folder.iconColor) ? { fill: eagleColor(folder.iconColor)! } : undefined}
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                ><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" /></svg>
                 <span className="folder-name truncate flex-1">{folder.name}</span>
                 {isLocked && <LockIcon />}
+                {isUnlockedRoot && (
+                    <button
+                        className="ml-auto p-0.5 rounded opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 transition-opacity"
+                        onClick={handleRelock}
+                        title="Lock folder"
+                        aria-label="Lock folder"
+                    >
+                        <UnlockedIcon />
+                    </button>
+                )}
             </div>
             {hasChildren && expanded && (
                 <div>
@@ -90,7 +135,7 @@ export default function Sidebar() {
         fetchMetadata();
     }, []);
 
-    const handleSpecialFilter = (filter: 'uncategorized' | 'untagged' | 'random' | null) => {
+    const handleSpecialFilter = (filter: 'uncategorized' | 'untagged' | 'random' | 'trash' | null) => {
         // Reset basic filters first
         clearFilters();
         // Then apply special
@@ -126,7 +171,6 @@ export default function Sidebar() {
                                 onClick={() => clearFilters()}
                             >
                                 <AllIcon /><span className="ml-3 font-medium">All</span>
-                                <span className="ml-auto text-xs opacity-60"></span> {/* Count? */}
                             </div>
 
                             <div
@@ -148,6 +192,13 @@ export default function Sidebar() {
                                 onClick={() => handleSpecialFilter('random')}
                             >
                                 <RandomIcon /><span className="ml-3 font-medium">Random</span>
+                            </div>
+
+                            <div
+                                className={`flex items-center px-4 py-2 mx-2 rounded-md cursor-pointer transition-colors text-sm ${filters.specialFilter === 'trash' ? 'bg-blue-600 text-white' : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800'}`}
+                                onClick={() => handleSpecialFilter('trash')}
+                            >
+                                <TrashIcon /><span className="ml-3 font-medium">Trash</span>
                             </div>
                         </div>
                     </div>

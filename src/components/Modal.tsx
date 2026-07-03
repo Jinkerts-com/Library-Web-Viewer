@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { filtersStore } from '../stores/libraryStore';
+import { useStore } from '@nanostores/react';
+import { filtersStore, tagsGroupsStore } from '../stores/libraryStore';
+import { eagleColor } from '../lib/eagleColors';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
 
 interface Item {
     id: string;
@@ -28,6 +31,7 @@ interface ModalProps {
 
 export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNext, onPrev, hasNext, hasPrev }: ModalProps) {
     const [infoOpen, setInfoOpen] = useState(false);
+    const tagsGroups = useStore(tagsGroupsStore);
     const touchStartX = useRef(0);
     const zoomScale = useRef(1);
     const lastPinchTime = useRef(0);
@@ -63,6 +67,36 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
             setSheetOffset(0);
         }
     }, [infoOpen]);
+
+    // Focus management: move focus into the dialog on open, restore on close
+    const modalRef = useRef<HTMLDivElement>(null);
+    const closeBtnRef = useRef<HTMLButtonElement>(null);
+    const previousFocus = useRef<HTMLElement | null>(null);
+
+    useEffect(() => {
+        if (isOpen) {
+            previousFocus.current = document.activeElement as HTMLElement | null;
+            closeBtnRef.current?.focus();
+            return () => previousFocus.current?.focus();
+        }
+    }, [isOpen]);
+
+    const handleTrapTab = (e: React.KeyboardEvent) => {
+        if (e.key !== 'Tab' || !modalRef.current) return;
+        const focusables = modalRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input, video, audio, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    };
 
     if (!isOpen || !item) return null;
 
@@ -157,11 +191,27 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
         onClose();
     };
 
+    // Tags take their color from the group they belong to
+    const tagColor = (tag: string): string | null => {
+        for (const group of tagsGroups) {
+            if (group.tags.includes(tag)) {
+                const c = eagleColor(group.color);
+                if (c) return c;
+            }
+        }
+        return null;
+    };
+
     return (
         <div
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={item.name}
             className="fixed inset-0 z-[3000] w-full h-full bg-black/85 dark:bg-black/95 overflow-hidden font-sans"
             onTouchStart={handleTouchStart}
             onTouchEnd={handleTouchEnd}
+            onKeyDown={handleTrapTab}
         >
             {/* Preload Next/Prev Images */}
             <div style={{ display: 'none' }}>
@@ -185,34 +235,42 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                 }}
             >
                 {/* Navigation Buttons */}
-                <div
+                <button
                     className={`absolute top-1/2 left-4 -translate-y-1/2 text-3xl text-white cursor-pointer select-none bg-black/40 hover:bg-black/80 rounded-full transition-colors z-10 flex items-center justify-center w-12 h-12 shadow-lg backdrop-blur-sm ${!hasPrev ? 'opacity-20 cursor-default pointer-events-none' : ''}`}
                     onClick={(e) => { e.stopPropagation(); onPrev(); }}
+                    disabled={!hasPrev}
+                    aria-label="Previous item"
                 >
                     &#10094;
-                </div>
-                <div
+                </button>
+                <button
                     className={`absolute top-1/2 right-4 -translate-y-1/2 text-3xl text-white cursor-pointer select-none bg-black/40 hover:bg-black/80 rounded-full transition-colors z-10 flex items-center justify-center w-12 h-12 shadow-lg backdrop-blur-sm ${!hasNext ? 'opacity-20 cursor-default pointer-events-none' : ''}`}
                     onClick={(e) => { e.stopPropagation(); onNext(); }}
+                    disabled={!hasNext}
+                    aria-label="Next item"
                 >
                     &#10095;
-                </div>
+                </button>
 
                 {/* Top Controls */}
                 <button
                     className={`absolute top-4 right-16 bg-black/40 hover:bg-black/80 text-white rounded-full w-10 h-10 cursor-pointer z-50 font-bold flex items-center justify-center transition-colors shadow-lg backdrop-blur-sm pointer-events-auto ${infoOpen ? 'bg-black/80 text-blue-400' : ''}`}
                     onClick={(e) => { e.stopPropagation(); setInfoOpen(!infoOpen); }}
                     title="Toggle Info"
+                    aria-label="Toggle info panel"
+                    aria-expanded={infoOpen}
                 >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </button>
-                <div
+                <button
+                    ref={closeBtnRef}
                     className="absolute top-4 right-4 text-white hover:text-red-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm"
                     onClick={(e) => { e.stopPropagation(); onClose(); }}
                     title="Close"
+                    aria-label="Close"
                 >
-                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </div>
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
 
                 {/* Media Wrapper */}
                 <div
@@ -234,7 +292,6 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                 alt="Cover"
                                 loading="eager"
                                 decoding="async"
-                                // @ts-ignore
                                 fetchPriority="high"
                             />
                             <audio src={fullResUrl} controls autoPlay className="w-full mt-auto mb-auto" />
@@ -257,12 +314,12 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                 setSliderValue(ref.state.scale);
                             }}
                         >
-                            {({ state, instance, zoomIn, zoomOut, setTransform, centerView }: any) => (
+                            {({ instance, zoomIn, zoomOut, setTransform }: ReactZoomPanPinchContentRef) => (
                                 <>
                                     {/* Zoom Controls */}
                                     <div className={`absolute top-4 left-1/2 -translate-x-1/2 bg-black/40 hover:bg-black/80 backdrop-blur-sm shadow-lg text-white rounded-full flex items-center px-4 py-2 gap-3 z-50 pointer-events-auto transition-colors ${infoOpen ? 'hidden md:flex' : 'flex'}`}>
-                                        <button onClick={(e) => { e.stopPropagation(); zoomOut(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom Out">
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                        <button onClick={(e) => { e.stopPropagation(); zoomOut(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom Out" aria-label="Zoom out">
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                                                 <circle cx="11" cy="11" r="8"></circle>
                                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                                                 <line x1="8" y1="11" x2="14" y2="11"></line>
@@ -296,10 +353,11 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                             }}
                                             onClick={(e) => e.stopPropagation()}
                                             className="w-24 md:w-32 accent-blue-500 cursor-pointer"
+                                            aria-label="Zoom level"
                                         />
 
-                                        <button onClick={(e) => { e.stopPropagation(); zoomIn(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom In">
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                        <button onClick={(e) => { e.stopPropagation(); zoomIn(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom In" aria-label="Zoom in">
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                                                 <circle cx="11" cy="11" r="8"></circle>
                                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                                                 <line x1="11" y1="8" x2="11" y2="14"></line>
@@ -311,13 +369,13 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                     <div
                                         className="w-full h-full flex items-center justify-center"
                                         onTouchStart={(e) => {
-                                            if ((state?.scale || 1) > 1.05) e.stopPropagation();
+                                            if (zoomScale.current > 1.05) e.stopPropagation();
                                         }}
                                         onTouchMove={(e) => {
-                                            if ((state?.scale || 1) > 1.05) e.stopPropagation();
+                                            if (zoomScale.current > 1.05) e.stopPropagation();
                                         }}
                                         onTouchEnd={(e) => {
-                                            if ((state?.scale || 1) > 1.05) e.stopPropagation();
+                                            if (zoomScale.current > 1.05) e.stopPropagation();
                                         }}
                                     >
                                         <TransformComponent wrapperClass="!w-full !h-full flex items-center justify-center !pointer-events-auto" contentClass="!w-full !h-full flex items-center justify-center">
@@ -327,7 +385,6 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                                 className="max-w-full max-h-full object-contain pointer-events-auto shadow-2xl transition-all duration-300"
                                                 loading="eager"
                                                 decoding="async"
-                                                // @ts-ignore
                                                 fetchPriority="high"
                                             />
                                         </TransformComponent>
@@ -369,8 +426,9 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                         className="p-1.5 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 transition-colors shrink-0"
                         onClick={() => navigator.clipboard.writeText(item.name)}
                         title="Copy Name"
+                        aria-label="Copy name"
                     >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                     </button>
                 </div>
 
@@ -398,15 +456,19 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                         <div className="text-sm flex flex-col pt-4">
                             <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Tags</span>
                             <div className="flex flex-wrap gap-1.5">
-                                {item.tags.map(tag => (
-                                    <span
-                                        key={tag}
-                                        className="bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 px-2 py-1 rounded-md text-xs font-medium cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
-                                        onClick={() => handleTagClick(tag)}
-                                    >
-                                        #{tag}
-                                    </span>
-                                ))}
+                                {item.tags.map(tag => {
+                                    const color = tagColor(tag);
+                                    return (
+                                        <span
+                                            key={tag}
+                                            className="bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 px-2 py-1 rounded-md text-xs font-medium cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
+                                            style={color ? { color, backgroundColor: `${color}1A`, borderColor: `${color}40` } : undefined}
+                                            onClick={() => handleTagClick(tag)}
+                                        >
+                                            #{tag}
+                                        </span>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}

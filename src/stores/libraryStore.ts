@@ -5,6 +5,9 @@ export interface Folder {
     name: string;
     description: string;
     children: Folder[];
+    hasPassword?: boolean;
+    passwordTips?: string;
+    iconColor?: string;
 }
 
 export interface TagGroup {
@@ -14,7 +17,7 @@ export interface TagGroup {
     color?: string;
 }
 
-export type SortBy = 'modificationTime' | 'name' | 'size';
+export type SortBy = 'modificationTime' | 'btime' | 'name' | 'ext' | 'size' | 'dimensions' | 'star' | 'duration';
 export type SortOrder = 'asc' | 'desc';
 export type LayoutMode = 'masonry' | 'justified' | 'grid';
 
@@ -23,19 +26,25 @@ export interface FilterState {
     folderId: string | null;
     includedTags: string[];
     excludedTags: string[];
+    tagRule: 'all' | 'any';
     color: string | null;
     colorAccuracy: number;
     sortBy: SortBy;
     sortOrder: SortOrder;
-    specialFilter: 'uncategorized' | 'untagged' | 'random' | null;
+    specialFilter: 'uncategorized' | 'untagged' | 'random' | 'trash' | null;
     recursive: boolean;
 }
 
 // State Atoms
 export const foldersStore = atom<Folder[]>([]);
 export const tagsStore = atom<string[]>([]);
+export const tagCountsStore = atom<Record<string, number>>({});
+// Tags present in the current view context (folder/special filter); null = no context yet
+export const relevantTagsStore = atom<string[] | null>(null);
+export const relevantTagCountsStore = atom<Record<string, number> | null>(null);
 export const tagsGroupsStore = atom<TagGroup[]>([]);
 export const lockedFoldersStore = atom<Set<string>>(new Set());
+export const unlockedFoldersStore = atom<Set<string>>(new Set()); // Session unlocks (matches server cookie)
 export const layoutStore = atom<LayoutMode>('masonry');
 export const sidebarOpenStore = atom<boolean>(false);
 export const themeStore = atom<'light' | 'dark'>('light');
@@ -48,6 +57,7 @@ export const filtersStore = map<FilterState>({
     folderId: null,
     includedTags: [],
     excludedTags: [],
+    tagRule: 'all',
     color: null,
     colorAccuracy: 60, // Default threshold
     sortBy: 'modificationTime',
@@ -80,8 +90,16 @@ export async function fetchMetadata() {
         const data = await res.json();
         foldersStore.set(data.folders || []);
         tagsStore.set(data.tags || []);
+        tagCountsStore.set(data.tagCounts || {});
         tagsGroupsStore.set(data.tagsGroups || []);
         lockedFoldersStore.set(new Set(data.lockedFolderIds || []));
+        // Only replace the set when membership actually changed, so listeners
+        // (e.g. the grid's refetch effect) don't fire for an identical set
+        const nextUnlocked = new Set<string>(data.unlockedFolderIds || []);
+        const currUnlocked = unlockedFoldersStore.get();
+        if (nextUnlocked.size !== currUnlocked.size || [...nextUnlocked].some(id => !currUnlocked.has(id))) {
+            unlockedFoldersStore.set(nextUnlocked);
+        }
     } catch (err) {
         console.error('Failed to fetch metadata:', err);
     }
@@ -143,6 +161,7 @@ export function clearFilters() {
     filtersStore.setKey('folderId', null);
     filtersStore.setKey('includedTags', []);
     filtersStore.setKey('excludedTags', []);
+    filtersStore.setKey('tagRule', 'all');
     filtersStore.setKey('color', null);
     filtersStore.setKey('colorAccuracy', 60);
     filtersStore.setKey('specialFilter', null);
@@ -155,6 +174,18 @@ export function addRecentColor(hex: string) {
     // Keep max 10 recent colors
     recentColorsStore.set([hex, ...filtered].slice(0, 10));
     localStorage.setItem('library_recent_colors', JSON.stringify(recentColorsStore.get()));
+}
+
+export function markFoldersUnlocked(ids: string[]) {
+    const next = new Set(unlockedFoldersStore.get());
+    ids.forEach(id => next.add(id));
+    unlockedFoldersStore.set(next);
+}
+
+export function markFoldersLocked(ids: string[]) {
+    const next = new Set(unlockedFoldersStore.get());
+    ids.forEach(id => next.delete(id));
+    unlockedFoldersStore.set(next);
 }
 
 export function toggleRecursive() {
