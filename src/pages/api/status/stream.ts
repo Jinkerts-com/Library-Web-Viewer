@@ -1,53 +1,12 @@
 import type { APIRoute } from 'astro';
 import { scanEmitter, getScanStatus } from '../../../lib/db';
+import { createStatusStream } from '../../../lib/sseStream';
 
 export const GET: APIRoute = async ({ request }) => {
-    let cleanup: () => void = () => { };
-
-    const stream = new ReadableStream({
-        start(controller) {
-            const encoder = new TextEncoder();
-
-            const send = (data: any) => {
-                try {
-                    const message = `data: ${JSON.stringify(data)}\n\n`;
-                    controller.enqueue(encoder.encode(message));
-                } catch (e) {
-                    if (cleanup) cleanup();
-                }
-            };
-
-            // Send initial status immediately. Every message (including the terminal
-            // 'complete' one, which carries isScanning:false plus outcome/error) is a
-            // superset of { isScanning, scannedCount }, so older readers keep working.
-            send(getScanStatus());
-
-            const listener = (data: any) => send(data);
-            const completeListener = (data: any) => send(data);
-
-            scanEmitter.on('progress', listener);
-            scanEmitter.on('complete', completeListener);
-
-            // Keep-alive heartbeat every 15s
-            const interval = setInterval(() => {
-                try {
-                    controller.enqueue(encoder.encode(`: keep-alive\n\n`));
-                } catch (e) {
-                    if (cleanup) cleanup();
-                }
-            }, 15000);
-
-            cleanup = () => {
-                clearInterval(interval);
-                scanEmitter.removeListener('progress', listener);
-                scanEmitter.removeListener('complete', completeListener);
-            };
-
-            request.signal.addEventListener('abort', cleanup);
-        },
-        cancel() {
-            if (cleanup) cleanup();
-        }
+    const stream = createStatusStream({
+        emitter: scanEmitter,
+        getStatus: getScanStatus,
+        signal: request.signal
     });
 
     return new Response(stream, {

@@ -13,14 +13,23 @@ services:
       # Required: The path to your library folder IN THE CONTAINER
       - LIBRARY_PATH=/library
 
-      # Optional: Restrict what domains/IPs can access the app (e.g. your-nas.local,192.168.1.50)
-      # If this is omitted, the app defaults to accepting all incoming requests
-      # - ALLOWED_HOSTS=
-
       # Optional thumbnail scaling/quality settings
       - THUMBNAIL_HEIGHT=400
       - THUMBNAIL_QUALITY=80
-      - THUMBNAIL_WEBP=true
+
+      # NOTE: ALLOWED_HOSTS only affects the development server (bun run dev). It does NOT
+      # restrict access to this container. To limit who can reach it, publish the port on a
+      # specific interface (e.g. "127.0.0.1:4321:4321"), use a firewall/VPN, or put a reverse
+      # proxy in front that rejects unexpected Host names.
+    healthcheck:
+      # Same probe as the image's HEALTHCHECK (the slim image has no curl/wget).
+      # Uses the container's HOST and PORT (defaults 0.0.0.0 / 4321); IPv6 hosts are bracketed.
+      # If you override PORT, set it in the container environment and match the port mapping.
+      test: ["CMD", "bun", "-e", "const h=process.env.HOST;const a=!h||h==='0.0.0.0'?'127.0.0.1':h==='::'?'[::1]':h.includes(':')&&h[0]!=='['?'['+h+']':h;fetch('http://'+a+':'+(process.env.PORT||4321)+'/api/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.status===200?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     volumes:
       # Mount your library folder to the container (Format: HostPath:ContainerPath)
       # Read-only (:ro) is highly recommended for safety

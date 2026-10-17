@@ -10,8 +10,11 @@ import { publishLockSnapshot } from './lockSnapshot';
 import { LibraryIndexer, type Logger } from './scan';
 import { createWatcherRouter } from './watcherEvents';
 import { createScanService, runCleanupSteps, safeEmit } from './scanLifecycle';
+import { resolveSseListenerLimit, resolveWatchPollInterval } from './sseStream';
 
 export const scanEmitter = new EventEmitter();
+// One 'progress' + one 'complete' listener per open SSE stream; bounded headroom, not unlimited (see sseStream.ts).
+scanEmitter.setMaxListeners(resolveSseListenerLimit(process.env.SSE_MAX_LISTENERS));
 
 export interface Folder {
     id: string;
@@ -225,7 +228,8 @@ export function initWatcher() {
     if (!fs.existsSync(imagesDir)) return;
 
     console.log("Initializing Real-time Watcher on:", imagesDir);
-    verboseLog("Watcher options: persistent=true, interval=2000");
+    const pollInterval = resolveWatchPollInterval(process.env.WATCH_POLL_INTERVAL_MS);
+    verboseLog(`Watcher options: persistent=true, usePolling=true, interval=${pollInterval}`);
 
     // Root metadata.json carries folder passwords/tag groups; images/ carries items and their originals
     watcher = chokidar.watch([imagesDir, path.join(libraryPath, "metadata.json")], {
@@ -233,8 +237,8 @@ export function initWatcher() {
         persistent: true,
         ignoreInitial: true,
         usePolling: true,
-        interval: 2000,
-        binaryInterval: 2000
+        interval: pollInterval,
+        binaryInterval: pollInterval
     });
 
     watcher
