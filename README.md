@@ -187,7 +187,7 @@ These are defense-in-depth measures, **not authentication**; there is no account
 
 **Scan-status stream.** Each open `/api/status/stream` connection holds one `progress` and one `complete` listener plus a 15 s heartbeat timer, all released on abort, cancel or enqueue failure (cleanup is idempotent). Node warns when one event has more than 10 listeners, so the cap is raised to a bounded `SSE_MAX_LISTENERS` (default `100`, clamped to `10`-`1000`). It is not a connection limit and is never set to unlimited, so a genuine leak still produces `MaxListenersExceededWarning`; `tests/sseLifecycle.test.ts` asserts that listener, timer and abort-listener counts return to baseline after repeated open/abort/cancel cycles.
 
-**Measured numbers** (Windows 11, AMD Ryzen 7 5800X, Bun 1.3.6, `db/` on a local drive, library on a mapped network drive; indicative single runs):
+**Measured numbers** (Windows 11 desktop, 16-thread desktop CPU, Bun 1.3.6, `db/` on a local drive, library on a mapped network share; indicative single runs):
 
 | Measurement | Result |
 |---|---|
@@ -201,7 +201,7 @@ The sort is O(N log N). In the measured 88-item workload it is negligible next t
 
 | Measurement | Result |
 |---|---|
-| Storage | `S:` is a mapped SMB network drive (`\\192.168.0.235\Godzilla`, Win32 DriveType 4, NTFS), LAN, not a local disk |
+| Storage | `S:` is a mapped network drive (SMB share over LAN, not a local disk) |
 | Workload | Production `db.ts` watcher against the real 88-item library (339 watched entries in 90 directories), 2000 ms polling, run read-only with a temporary working directory and database; observed for 226 s with no library changes |
 | Idle CPU | ~9% of one logical core of the Bun process (21.2 s CPU in 226 s; ~9.2% cumulative over the run, stable). The 5800X has 16 logical cores, so this is ~0.6% of total CPU. RSS ~215-225 MB (includes the loaded app, not only the watcher) |
 | Idle I/O | Process-level counters showed 0 read ops/bytes and ~1 write per 30 s (SQLite housekeeping in the temp DB); ~1.25 million "other" I/O operations (~5,500/s, which on Windows includes file metadata/stat queries). Network traffic and server-side load were not measured |
