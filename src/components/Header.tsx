@@ -26,6 +26,9 @@ import {
 } from '../stores/libraryStore';
 
 import LibraryColorPicker from './LibraryColorPicker';
+import ShapeFilter from './ShapeFilter';
+import TypeFilter from './TypeFilter';
+import { useIsMobile } from './FacetFilterPopover';
 import { eagleColor } from '../lib/eagleColors';
 import { buildBreadcrumbs } from '../lib/folderPaths';
 
@@ -63,6 +66,23 @@ export default function Header() {
     const popoverRef = useRef<HTMLDivElement>(null);
     const colorPopoverRef = useRef<HTMLDivElement>(null);
 
+    // Only one filter popover is open at a time (tags, colors, shape, types)
+    const isMobile = useIsMobile();
+    const [openFacet, setOpenFacet] = useState<'shape' | 'types' | null>(null);
+    const setFacetOpen = (which: 'shape' | 'types') => (open: boolean) => {
+        setOpenFacet(open ? which : null);
+        if (open) {
+            setIsTagPopoverOpen(false);
+            setIsColorPopoverOpen(false);
+        }
+    };
+    const facetChips = (
+        <>
+            <ShapeFilter open={openFacet === 'shape'} onOpenChange={setFacetOpen('shape')} />
+            <TypeFilter open={openFacet === 'types'} onOpenChange={setFacetOpen('types')} />
+        </>
+    );
+
     // Close popover when clicking outside
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
@@ -80,7 +100,8 @@ export default function Header() {
     }, []);
 
     return (
-        <header className="w-full h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700 flex items-center px-4 gap-4 box-border z-20 sticky top-0 justify-between">
+        <header className="w-full bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700 box-border z-20 sticky top-0">
+        <div className="w-full h-16 flex items-center px-4 gap-4 box-border justify-between">
             {/* Left: Breadcrumbs */}
             <div className="flex items-center gap-2">
                 <button
@@ -125,7 +146,7 @@ export default function Header() {
                             title="Colors"
                             aria-label="Filter by color"
                             aria-expanded={isColorPopoverOpen}
-                            onClick={() => setIsColorPopoverOpen(!isColorPopoverOpen)}
+                            onClick={() => { setOpenFacet(null); setIsTagPopoverOpen(false); setIsColorPopoverOpen(!isColorPopoverOpen); }}
                         >
                             {filters.color ? (
                                 <span className="w-5 h-5 rounded-full inline-block border border-zinc-300 dark:border-zinc-700" style={{ backgroundColor: filters.color }}></span>
@@ -157,7 +178,7 @@ export default function Header() {
                             title="Tags"
                             aria-label="Filter by tags"
                             aria-expanded={isTagPopoverOpen}
-                            onClick={() => setIsTagPopoverOpen(!isTagPopoverOpen)}
+                            onClick={() => { setOpenFacet(null); setIsColorPopoverOpen(false); setIsTagPopoverOpen(!isTagPopoverOpen); }}
                         >
                             <TagIcon />
                         </button>
@@ -327,6 +348,9 @@ export default function Header() {
                         })()}
                     </div>
                 </div>
+
+                {/* Shape / Types chips (desktop; below md they live in the second row) */}
+                {!isMobile && <div className="flex items-center gap-2 mr-2">{facetChips}</div>}
 
                 {/* Search Bar */}
                 <div className="flex-1 relative">
@@ -527,6 +551,15 @@ export default function Header() {
                     )}
                 </div>
             </div>
+        </div>
+
+        {/* Second filter row below md: chips scroll horizontally; their popovers are
+            fixed-position so this scroller cannot clip them */}
+        {isMobile && (
+            <div className="flex items-center gap-2 px-4 pb-2 overflow-x-auto" role="group" aria-label="Shape and type filters">
+                {facetChips}
+            </div>
+        )}
         </header>
     );
 }

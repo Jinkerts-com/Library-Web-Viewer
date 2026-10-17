@@ -2,9 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Masonry from 'react-masonry-css';
 import Modal from './Modal';
 import { useStore } from '@nanostores/react';
-import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore, libraryReadyStore, gridRevisionStore, fetchMetadata } from '../stores/libraryStore';
-import { GridRequestController, resolveSelection } from '../lib/gridRequests';
+import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore, libraryReadyStore, gridRevisionStore, fetchMetadata, shapeCountsStore, typeCountsStore } from '../stores/libraryStore';
+import { GridRequestController, facetContextKeys, resolveSelection } from '../lib/gridRequests';
 import type { GridState } from '../lib/gridRequests';
+import { ModalNavigation } from '../lib/modalNavigation';
+import type { NavStatus } from '../lib/modalNavigation';
 import LockScreen from './LockScreen';
 import { thumbnailUrl } from '../lib/mediaUrls';
 import type { LibraryItem } from '../lib/itemTypes';
@@ -42,12 +44,27 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
     // The controller is owned by the effect run below (not by render), so its
     // lifetime is exactly one effect instance; the ref only exposes the live one.
     const controllerRef = useRef<GridRequestController<Item> | null>(null);
+    const facetKeysRef = useRef<{ shape: string | null; type: string | null }>({ shape: null, type: null });
     const { items, loading, error: gridError, hasMore } = grid;
 
     // Modal selection is tracked by id so it can't point at a different item
     // after the result set changes; it closes if the item is no longer present.
     const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
     const selectedItemIndex = resolveSelection(items, selectedItemId);
+
+    // Next/previous across page boundaries (see modalNavigation.ts). The ref
+    // mirrors the selection so controller callbacks never read a stale closure.
+    const selectedIdRef = useRef<string | null>(null);
+    selectedIdRef.current = selectedItemId;
+    const [navStatus, setNavStatus] = useState<NavStatus | null>(null);
+    const navRef = useRef<ModalNavigation<Item> | null>(null);
+    if (!navRef.current) {
+        navRef.current = new ModalNavigation<Item>({
+            select: id => { selectedIdRef.current = id; setSelectedItemId(id); },
+            onStatus: setNavStatus,
+        });
+    }
+    const nav = navRef.current;
 
     // Measured content width, needed to compute justified rows
     const containerRef = useRef<HTMLDivElement>(null);
@@ -74,22 +91,46 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
     // contextual tags, on unmount, context change, or Strict Mode replay.
     useEffect(() => {
         setSelectedItemId(null);
-        const controller = new GridRequestController<Item>({
+        nav.cancel();
+        // Facet counts belong to a context; drop them as soon as their own
+        // context changes so previous-context counts are never shown. Toggling
+        // a shape only changes the type context (and vice versa), so the other
+        // dimension keeps its still-valid counts while page 1 reloads.
+        const keys = facetContextKeys(filters, `${[...unlockedFolders].sort().join(',')}|${libraryReady}`);
+        if (facetKeysRef.current.shape !== keys.shape) shapeCountsStore.set(null);
+        if (facetKeysRef.current.type !== keys.type) typeCountsStore.set(null);
+        facetKeysRef.current = keys;
+        const controller: GridRequestController<Item> = new GridRequestController<Item>({
             fetchFn: (url, init) => fetch(url, init),
-            onChange: setGrid,
+            onChange: state => {
+                setGrid(state);
+                nav.observe(selectedIdRef.current, controller);
+            },
+            // Multi-page navigation continues only once the request slot is free
+            onSettled: () => nav.settled(selectedIdRef.current, controller),
             // The API reports which tags exist in the current view context
             onContextTags: (tags, counts) => {
                 relevantTagsStore.set(tags);
                 relevantTagCountsStore.set(counts);
             },
+            onFacets: update => {
+                if (update.shape !== undefined) shapeCountsStore.set(update.shape);
+                if (update.type !== undefined) typeCountsStore.set(update.type);
+            },
         });
         controllerRef.current = controller;
         controller.refresh(filters, !isLockedView);
         return () => {
+            nav.cancel();
             controller.dispose();
             if (controllerRef.current === controller) controllerRef.current = null;
         };
     }, [filters, unlockedFolders, libraryReady, isLockedView]);
+
+    // Any selection change (close, another item) cancels a pending intent
+    useEffect(() => {
+        nav.observe(selectedItemId, controllerRef.current);
+    }, [selectedItemId]);
 
     // A finished rescan bumps the revision: reload page 1 on the live controller
     // (new generation, in-flight work aborted) with the filters unchanged.
@@ -98,6 +139,9 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
     useEffect(() => {
         if (seenRevisionRef.current === gridRevision) return;
         seenRevisionRef.current = gridRevision;
+        // The reloaded result set may not contain the open item: close the modal
+        setSelectedItemId(null);
+        nav.cancel();
         controllerRef.current?.reload();
     }, [gridRevision]);
 
@@ -132,19 +176,26 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
         }
     };
 
-    const handleCloseModal = () => setSelectedItemId(null);
-
-    const handleNext = () => {
-        if (selectedItemIndex !== null && selectedItemIndex < items.length - 1) {
-            setSelectedItemId(items[selectedItemIndex + 1].id);
-        }
+    const handleCloseModal = () => {
+        nav.cancel();
+        setSelectedItemId(null);
     };
 
-    const handlePrev = () => {
-        if (selectedItemIndex !== null && selectedItemIndex > 0) {
-            setSelectedItemId(items[selectedItemIndex - 1].id);
-        }
-    };
+    const handleNext = () => { nav.navigate('next', selectedIdRef.current, controllerRef.current); };
+    const handlePrev = () => { nav.navigate('previous', selectedIdRef.current, controllerRef.current); };
+    const handleRetryNav = () => { nav.retry(controllerRef.current); };
+    const handleCancelNav = () => nav.cancel();
+
+    // Navigation is possible with several items, or while more pages could add some.
+    // Wrap neighbours are only handed over (for preloading) once the list is
+    // exhausted, i.e. when they are actually known.
+    const canNavigate = selectedItemIndex !== null && (items.length > 1 || hasMore);
+    const nextItem = selectedItemIndex === null ? null
+        : selectedItemIndex < items.length - 1 ? items[selectedItemIndex + 1]
+        : !hasMore && items.length > 1 ? items[0] : null;
+    const prevItem = selectedItemIndex === null ? null
+        : selectedItemIndex > 0 ? items[selectedItemIndex - 1]
+        : !hasMore && items.length > 1 ? items[items.length - 1] : null;
 
     const getBreakpointCols = (zoomVal: number) => {
         const targetWidth = zoomVal || 200;
@@ -318,14 +369,17 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
 
             <Modal
                 item={selectedItemIndex !== null ? items[selectedItemIndex] : null}
-                nextItem={selectedItemIndex !== null && selectedItemIndex < items.length - 1 ? items[selectedItemIndex + 1] : null}
-                prevItem={selectedItemIndex !== null && selectedItemIndex > 0 ? items[selectedItemIndex - 1] : null}
+                nextItem={nextItem}
+                prevItem={prevItem}
                 isOpen={selectedItemIndex !== null}
                 onClose={handleCloseModal}
                 onNext={handleNext}
                 onPrev={handlePrev}
-                hasNext={selectedItemIndex !== null && selectedItemIndex < items.length - 1}
-                hasPrev={selectedItemIndex !== null && selectedItemIndex > 0}
+                hasNext={canNavigate}
+                hasPrev={canNavigate}
+                navStatus={navStatus}
+                onRetryNav={handleRetryNav}
+                onCancelNav={handleCancelNav}
             />
         </div>
     );

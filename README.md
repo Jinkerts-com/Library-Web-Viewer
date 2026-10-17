@@ -13,6 +13,7 @@ I am not a security expert, and this app has not been audited for security. Use 
 - **Fast Performance**: Built on Astro for optimal performance.
 - **Masonry Layout**: Justified and waterfall grid layouts.
 - **Search & Filter**: Quickly find assets in your library.
+- **Shape & Type Filters**: Header chips filter by aspect ratio (Horizontal, Vertical, Square, Panoramic, 4:3, 3:4, 16:9, 9:16, or a Custom `W : H`) and by file type. Each option shows a count for the current view; click a row to include it, use its minus button (or right-click / Alt-click) to exclude it. Shapes are overlapping application rules, not Eagle's: an item must have positive numeric width and height to match any shape (otherwise it matches none, not even Square); Horizontal/Vertical are `width > height` / `width < height`, Square is exactly equal, Panoramic is 2:1 or wider (1:2 or taller), and the named and Custom ratios match within an inclusive ±2% band. Counts are per option, so one image can count toward several shapes. The type list only offers extensions present in the current view (`jpg` and `jpeg` stay separate). `GET /api/items` takes repeated `shape`, `excludedShape`, `type`, `excludedType` params plus `ratioWidth`/`ratioHeight` (integers 1-10000, default 4:3) and returns `shapeCounts`/`typeCounts` on page 1; malformed values get HTTP 400.
 - **Folder Navigation**: Browse your library's folder structure.
 - **Tags and Information**: View tags and information for each asset.
 
@@ -84,6 +85,9 @@ services:
       # Optional thumbnail scaling/quality settings
       - THUMBNAIL_HEIGHT=400
       - THUMBNAIL_QUALITY=80
+
+      # Optional initial theme: DARK (default) or LIGHT, case-insensitive
+      - VIEWER_THEME=DARK
 
       # NOTE: ALLOWED_HOSTS only affects the development server (bun run dev). It does NOT
       # restrict access to this container. To limit who can reach it, publish the port on a
@@ -165,6 +169,7 @@ HOST=192.168.1.50 PORT=8080 bun run start
 Environment variables for the server (all optional except `LIBRARY_PATH`; see `.env.example`):
 
 - `HOST` / `PORT`: bind address (default `0.0.0.0`) and port (default `4321`); the `--host` / `--port` flags override them. In Docker these are set to `0.0.0.0` / `4321` by the image; change the published port in `ports:` rather than `PORT`. The healthcheck already reads the container's own `PORT`, but it runs as a separate process whose environment launch flags such as `--port` cannot change, so if you override the port, set it via the container environment (`PORT`) and make the container-side port mapping match.
+- `VIEWER_THEME=DARK|LIGHT`: initial viewer theme (case-insensitive; invalid or unset means dark). A theme already saved in the browser by the theme toggle overrides it. It is read per request, so restarting the server or container is enough (no rebuild). **Note:** the viewer previously defaulted to light for first-time visitors; the built-in default is now dark, so set `VIEWER_THEME=LIGHT` to keep the old look.
 - `VERBOSE=true`: verbose logging (the `setup`, `update` and `rebuild` scripts enable it themselves).
 - `ALLOWED_HOSTS`: **development server only** (`bun run dev`). It is not read by the production server or the Docker image and does not restrict access there; see Request protection below.
 

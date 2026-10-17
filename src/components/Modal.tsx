@@ -7,6 +7,7 @@ import { AUDIO_PLAY_EXTS, IMAGE_RENDER_EXTS, VIDEO_PLAY_EXTS } from '../lib/mime
 import { dateAdded, formatDuration, formatTimestamp, ratingStars, MAX_RATING, type LibraryItem } from '../lib/itemTypes';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
+import type { NavStatus } from '../lib/modalNavigation';
 
 type Item = LibraryItem;
 
@@ -23,9 +24,16 @@ interface ModalProps {
     onPrev: () => void;
     hasNext: boolean;
     hasPrev: boolean;
+    /** Pending/failed boundary navigation (next page / last item); the current media stays visible. */
+    navStatus?: NavStatus | null;
+    onRetryNav?: () => void;
+    onCancelNav?: () => void;
 }
 
-export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNext, onPrev, hasNext, hasPrev }: ModalProps) {
+// Keys typed into or gestures made on these must never navigate (e.g. arrow keys on the zoom slider)
+const INTERACTIVE_SELECTOR = 'input, textarea, select, button, a, [contenteditable="true"], [data-no-swipe]';
+
+export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNext, onPrev, hasNext, hasPrev, navStatus, onRetryNav, onCancelNav }: ModalProps) {
     const [infoOpen, setInfoOpen] = useState(false);
     const tagsGroups = useStore(tagsGroupsStore);
     const touchStartX = useRef(0);
@@ -49,6 +57,8 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
         const handleKeyDown = (e: KeyboardEvent) => {
             if (!isOpen) return;
             if (e.key === 'Escape') onClose();
+            const target = e.target instanceof Element ? e.target : null;
+            if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
             if (e.key === 'ArrowRight' && hasNext) onNext();
             if (e.key === 'ArrowLeft' && hasPrev) onPrev();
         };
@@ -130,8 +140,9 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
             lastPinchTime.current = Date.now();
         }
 
-        // Only track single touch points
-        if (e.touches.length === 1 && zoomScale.current <= 1.05) {
+        // Only track single touch points, and never ones that start on a control
+        const onControl = e.target instanceof Element && !!e.target.closest(INTERACTIVE_SELECTOR);
+        if (e.touches.length === 1 && zoomScale.current <= 1.05 && !onControl) {
             touchStartX.current = e.touches[0].screenX;
         } else {
             touchStartX.current = 0;
@@ -253,9 +264,11 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                     &#10095;
                 </button>
 
-                {/* Top Controls */}
+                {/* Top Controls: one action row on mobile (safe-area aware); md+ dissolves the
+                    row (display: contents) so each action keeps its absolute desktop position. */}
+                <div className="absolute inset-x-0 top-0 z-50 flex items-center justify-end gap-2 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pointer-events-none md:contents">
                 <button
-                    className={`absolute top-4 right-16 bg-black/40 hover:bg-black/80 text-white rounded-full w-10 h-10 cursor-pointer z-50 font-bold flex items-center justify-center transition-colors shadow-lg backdrop-blur-sm pointer-events-auto ${infoOpen ? 'bg-black/80 text-blue-400' : ''}`}
+                    className={`relative md:absolute md:top-4 md:right-16 bg-black/40 hover:bg-black/80 text-white rounded-full w-11 h-11 md:w-10 md:h-10 cursor-pointer z-50 font-bold flex items-center justify-center transition-colors shadow-lg backdrop-blur-sm pointer-events-auto ${infoOpen ? 'bg-black/80 text-blue-400' : ''}`}
                     onClick={(e) => { e.stopPropagation(); setInfoOpen(!infoOpen); }}
                     title="Toggle Info"
                     aria-label="Toggle info panel"
@@ -268,7 +281,7 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                     served as an attachment, so "open" downloads it instead of running it on this origin. */}
                 <a
                     {...downloadLinkProps(item.id, item.name, item.ext)}
-                    className="absolute top-4 right-28 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
+                    className="relative md:absolute md:top-4 md:right-28 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-11 h-11 md:w-10 md:h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
                     onClick={(e) => e.stopPropagation()}
                     title="Download original"
                     aria-label="Download original"
@@ -277,7 +290,7 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                 </a>
                 <a
                     {...openOriginalLinkProps(item.id, item.name, item.ext)}
-                    className="absolute top-4 right-40 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
+                    className="relative md:absolute md:top-4 md:right-40 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-11 h-11 md:w-10 md:h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
                     onClick={(e) => e.stopPropagation()}
                     title="Open original in new tab"
                     aria-label="Open original in new tab"
@@ -286,17 +299,40 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                 </a>
                 <button
                     ref={closeBtnRef}
-                    className="absolute top-4 right-4 text-white hover:text-red-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm"
+                    className="relative md:absolute md:top-4 md:right-4 text-white hover:text-red-400 bg-black/40 hover:bg-black/80 w-11 h-11 md:w-10 md:h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
                     onClick={(e) => { e.stopPropagation(); onClose(); }}
                     title="Close"
                     aria-label="Close"
                 >
                     <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
+                </div>
 
-                {/* Media Wrapper */}
+                {/* Boundary navigation status: compact, never replaces the current media */}
+                {navStatus && (
+                    <div
+                        role="status"
+                        data-no-swipe
+                        className="absolute left-1/2 -translate-x-1/2 bottom-[calc(max(1rem,env(safe-area-inset-bottom))+3.5rem)] md:bottom-6 z-50 max-w-[calc(100vw-1.5rem)] flex items-center gap-3 bg-black/70 backdrop-blur-sm text-white text-sm rounded-full px-4 py-2 shadow-lg pointer-events-auto"
+                    >
+                        {navStatus.phase === 'loading' ? (
+                            <>
+                                <span className="border-2 border-white/30 border-t-white rounded-full w-4 h-4 animate-spin shrink-0" aria-hidden="true" />
+                                <span>{navStatus.direction === 'previous-wrap' ? 'Loading last item…' : 'Loading next items…'}</span>
+                            </>
+                        ) : (
+                            <>
+                                <span className="truncate">{navStatus.message || 'Failed to load items'}</span>
+                                <button type="button" onClick={(e) => { e.stopPropagation(); onRetryNav?.(); }} className="px-3 min-h-[44px] md:min-h-0 rounded-full bg-blue-600 hover:bg-blue-500">Retry</button>
+                            </>
+                        )}
+                        <button type="button" onClick={(e) => { e.stopPropagation(); onCancelNav?.(); }} className="px-3 min-h-[44px] md:min-h-0 rounded-full hover:bg-white/20" aria-label="Cancel navigation">Cancel</button>
+                    </div>
+                )}
+
+                {/* Media Wrapper: on mobile, top/bottom space is reserved for the control bands */}
                 <div
-                    className="w-full h-full flex items-center justify-center p-4 sm:p-12 pointer-events-none"
+                    className="w-full h-full flex items-center justify-center p-4 pt-[calc(4.5rem+env(safe-area-inset-top))] pb-[calc(5rem+env(safe-area-inset-bottom))] md:p-12 pointer-events-none"
                     onClick={(e) => {
                         if (e.target === e.currentTarget) {
                             if (infoOpen) setInfoOpen(false);
@@ -339,8 +375,9 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                             {({ instance, zoomIn, zoomOut, setTransform }: ReactZoomPanPinchContentRef) => (
                                 <>
                                     {/* Zoom Controls */}
-                                    <div className={`absolute top-4 left-1/2 -translate-x-1/2 bg-black/40 hover:bg-black/80 backdrop-blur-sm shadow-lg text-white rounded-full flex items-center px-4 py-2 gap-3 z-50 pointer-events-auto transition-colors ${infoOpen ? 'hidden md:flex' : 'flex'}`}>
-                                        <button onClick={(e) => { e.stopPropagation(); zoomOut(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom Out" aria-label="Zoom out">
+                                    {/* Bottom band on mobile (above the safe-area inset, bounded to the viewport); top-centered on md+ */}
+                                    <div data-no-swipe className={`absolute left-1/2 -translate-x-1/2 bottom-[max(1rem,env(safe-area-inset-bottom))] md:bottom-auto md:top-4 max-w-[calc(100vw-1.5rem)] bg-black/40 hover:bg-black/80 backdrop-blur-sm shadow-lg text-white rounded-full flex items-center px-2 py-1 gap-1 md:px-4 md:py-2 md:gap-3 z-50 pointer-events-auto transition-colors ${infoOpen ? 'hidden md:flex' : 'flex'}`}>
+                                        <button onClick={(e) => { e.stopPropagation(); zoomOut(0.2); }} className="w-11 h-11 md:w-auto md:h-auto flex items-center justify-center shrink-0 hover:text-blue-400 outline-none transition-colors" title="Zoom Out" aria-label="Zoom out">
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                                                 <circle cx="11" cy="11" r="8"></circle>
                                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
@@ -374,11 +411,11 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                                                 }
                                             }}
                                             onClick={(e) => e.stopPropagation()}
-                                            className="w-24 md:w-32 accent-blue-500 cursor-pointer"
+                                            className="w-28 min-w-0 md:w-32 accent-blue-500 cursor-pointer"
                                             aria-label="Zoom level"
                                         />
 
-                                        <button onClick={(e) => { e.stopPropagation(); zoomIn(0.2); }} className="hover:text-blue-400 outline-none transition-colors" title="Zoom In" aria-label="Zoom in">
+                                        <button onClick={(e) => { e.stopPropagation(); zoomIn(0.2); }} className="w-11 h-11 md:w-auto md:h-auto flex items-center justify-center shrink-0 hover:text-blue-400 outline-none transition-colors" title="Zoom In" aria-label="Zoom in">
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                                                 <circle cx="11" cy="11" r="8"></circle>
                                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>

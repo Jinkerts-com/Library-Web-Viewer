@@ -139,7 +139,7 @@ describe("/api/items handler", () => {
             palettes: '[{"color":[10,20,30],"ratio":55.5}]'
         });
         const { body } = await t.get();
-        expect(Object.keys(body).sort()).toEqual(["items", "relevantTagCounts", "relevantTags", "totalItems"]);
+        expect(Object.keys(body).sort()).toEqual(["items", "relevantTagCounts", "relevantTags", "shapeCounts", "totalItems", "typeCounts"]); // facets are additive page-1 fields
         expect(body.totalItems).toBe(1);
         expect(body.relevantTags).toEqual(["a", "b"]);
         expect(body.relevantTagCounts).toEqual({ a: 1, b: 1 });
@@ -366,5 +366,276 @@ describe("/api/items handler", () => {
         expect(await ids("tag=x,y")).toEqual(["a"]);
         expect(await ids("tag=x,y&tagRule=any")).toEqual(["a", "b"]);
         expect(await ids("excludedTags=y")).toEqual(["b"]);
+    });
+});
+
+describe("/api/items shape + type facets", () => {
+    const ZERO_SHAPES = { horizontal: 0, vertical: 0, square: 0, "panoramic-horizontal": 0, "panoramic-vertical": 0, "4:3": 0, "3:4": 0, "16:9": 0, "9:16": 0, custom: 0 };
+    const shapes = (over: Record<string, number>) => ({ ...ZERO_SHAPES, ...over });
+
+    function dataset() {
+        const t = setup();
+        t.insert("a", { width: 400, height: 300, ext: "png", tags: '["x"]' });
+        t.insert("b", { width: 3000, height: 1000, ext: "jpg", tags: '["x"]' });
+        t.insert("c", { width: 100, height: 100, ext: "png", palettes: '[{"color":[255,0,0],"ratio":50}]' });
+        t.insert("d", { width: 300, height: 400, ext: "JPG", tags: '["y"]' });
+        t.insert("e", { width: null, height: null, ext: "mp4" });
+        t.insert("f", { width: 0, height: 0, ext: "" });
+        t.insert("g", { width: "abc", height: 5, ext: "gif" });
+        const ids = async (q: string) => (await t.get(q)).body.items.map((i: any) => i.id).sort();
+        return { ...t, ids };
+    }
+
+    test("overlapping predicates: a 4:3 image is Horizontal AND 4:3; counts are not mutually exclusive", async () => {
+        const t = dataset();
+        expect(await t.ids("shape=horizontal")).toEqual(["a", "b"]);
+        expect(await t.ids("shape=4%3A3")).toEqual(["a"]);
+        expect(await t.ids("shape=panoramic-horizontal")).toEqual(["b"]);
+        expect(await t.ids("shape=vertical")).toEqual(["d"]);
+        expect(await t.ids("shape=3%3A4")).toEqual(["d"]);
+        expect(await t.ids("shape=square")).toEqual(["c"]);
+        const { body } = await t.get();
+        expect(body.shapeCounts).toEqual(shapes({ horizontal: 2, vertical: 1, square: 1, "panoramic-horizontal": 1, "4:3": 1, "3:4": 1, custom: 1 }));
+    });
+
+    test("malformed dimensions (null, zero, text) match no shape, not even Square, and stay eligible when only excluded", async () => {
+        const t = dataset();
+        expect(await t.ids("shape=square")).toEqual(["c"]);
+        expect(await t.ids("excludedShape=horizontal")).toEqual(["c", "d", "e", "f", "g"]);
+        expect(await t.ids("excludedShape=square")).toEqual(["a", "b", "d", "e", "f", "g"]);
+    });
+
+    test("OR within a dimension; exclusion wins on overlap; shape ANDs with type", async () => {
+        const t = dataset();
+        expect(await t.ids("shape=horizontal&shape=vertical")).toEqual(["a", "b", "d"]);
+        expect(await t.ids("shape=horizontal&excludedShape=panoramic-horizontal")).toEqual(["a"]);
+        expect(await t.ids("shape=horizontal&excludedShape=horizontal")).toEqual([]);
+        expect(await t.ids("shape=horizontal&type=png")).toEqual(["a"]);
+        expect(await t.ids("shape=horizontal&type=png&type=jpg")).toEqual(["a", "b"]);
+        expect(await t.ids("type=png&excludedType=png")).toEqual([]);
+    });
+
+    test("types normalize to lowercase keys, '' is 'no extension', jpg/jpeg are not merged", async () => {
+        const t = dataset();
+        t.insert("h", { ext: "jpeg" });
+        expect((await t.get()).body.typeCounts).toEqual({ png: 2, jpg: 2, jpeg: 1, mp4: 1, "": 1, gif: 1 });
+        expect(await t.ids("type=jpg")).toEqual(["b", "d"]);
+        expect(await t.ids("type=JPG")).toEqual(["b", "d"]);
+        expect(await t.ids("type=jpeg")).toEqual(["h"]);
+        expect(await t.ids("type=")).toEqual(["f"]);
+        expect(await t.ids("excludedType=&excludedType=png&excludedType=jpg")).toEqual(["e", "g", "h"]);
+    });
+
+    test("shape and type filters are independent of tag all/any", async () => {
+        const t = dataset();
+        expect(await t.ids("tag=x,y&tagRule=any&shape=horizontal")).toEqual(["a", "b"]);
+        expect(await t.ids("tag=x,y&tagRule=any&shape=vertical")).toEqual(["d"]);
+        expect(await t.ids("tag=x,y&shape=vertical")).toEqual([]);
+        expect(await t.ids("tag=x&excludedShape=panoramic-horizontal")).toEqual(["a"]);
+        const any = (await t.get("tag=x,y&tagRule=any")).body;
+        const all = (await t.get("tag=x,y")).body;
+        expect(any.shapeCounts.horizontal).toBe(2);
+        expect(all.shapeCounts).toEqual(shapes({}));
+    });
+
+    test("custom ratio: committed pair is used by Custom, count computed even when Custom is not selected", async () => {
+        const t = dataset();
+        // 3:4 pair matches d (300x400); default pair (4:3) matches a
+        expect((await t.get("ratioWidth=3&ratioHeight=4")).body.shapeCounts.custom).toBe(1);
+        expect(await t.ids("shape=custom&ratioWidth=3&ratioHeight=4")).toEqual(["d"]);
+        expect(await t.ids("shape=custom")).toEqual(["a"]);
+        expect(await t.ids("shape=custom&ratioWidth=3&ratioHeight=1")).toEqual(["b"]);
+        expect(await t.ids("excludedShape=custom&ratioWidth=3&ratioHeight=4&shape=horizontal")).toEqual(["a", "b"]);
+        expect((await t.get("ratioWidth=21&ratioHeight=9")).body.shapeCounts.custom).toBe(0);
+        // tolerance edge via the API: 136x100 is inside the 4:3 band, 137x100 is not
+        t.insert("edgeIn", { width: 136, height: 100 });
+        t.insert("edgeOut", { width: 137, height: 100 });
+        expect(await t.ids("shape=4%3A3")).toEqual(["a", "edgeIn"]);
+    });
+
+    test("shapeCounts omit shape includes AND excludes but keep type, tag, search and color", async () => {
+        const t = dataset();
+        const base = (await t.get()).body.shapeCounts;
+        for (const q of ["shape=square", "excludedShape=horizontal", "shape=vertical&excludedShape=square"]) {
+            expect((await t.get(q)).body.shapeCounts).toEqual(base);
+        }
+        expect((await t.get("type=png")).body.shapeCounts).toEqual(shapes({ horizontal: 1, square: 1, "4:3": 1, custom: 1 }));
+        expect((await t.get("excludedType=png&shape=horizontal")).body.shapeCounts).toEqual(shapes({ horizontal: 1, vertical: 1, "panoramic-horizontal": 1, "3:4": 1 }));
+        expect((await t.get("tag=x")).body.shapeCounts).toEqual(shapes({ horizontal: 2, "panoramic-horizontal": 1, "4:3": 1, custom: 1 }));
+        expect((await t.get("excludedTags=x")).body.shapeCounts).toEqual(shapes({ vertical: 1, square: 1, "3:4": 1 }));
+        expect((await t.get("search=d")).body.shapeCounts).toEqual(shapes({ vertical: 1, "3:4": 1 }));
+        expect((await t.get("color=ff0000&colorAccuracy=0")).body.shapeCounts).toEqual(shapes({ square: 1 }));
+    });
+
+    test("typeCounts omit type includes AND excludes but keep shape, tag, search and color", async () => {
+        const t = dataset();
+        const base = (await t.get()).body.typeCounts;
+        expect(base).toEqual({ png: 2, jpg: 2, mp4: 1, "": 1, gif: 1 });
+        for (const q of ["type=png", "excludedType=png", "type=jpg&excludedType=mp4"]) {
+            expect((await t.get(q)).body.typeCounts).toEqual(base);
+        }
+        expect((await t.get("shape=horizontal")).body.typeCounts).toEqual({ png: 1, jpg: 1 });
+        expect((await t.get("excludedShape=horizontal&type=png")).body.typeCounts).toEqual({ png: 1, jpg: 1, mp4: 1, "": 1, gif: 1 });
+        expect((await t.get("tag=x")).body.typeCounts).toEqual({ png: 1, jpg: 1 });
+        expect((await t.get("search=a")).body.typeCounts).toEqual({ png: 1 });
+        expect((await t.get("color=ff0000&colorAccuracy=0")).body.typeCounts).toEqual({ png: 1 });
+        expect((await t.get("shape=panoramic-vertical")).body.typeCounts).toEqual({});
+    });
+
+    test("counts cover every matching row, not just the loaded page; facets are page-1 only", async () => {
+        const t = setup();
+        for (let i = 0; i < 12; i++) t.insert(`h${i}`, { width: 200, height: 100, ext: i % 2 ? "png" : "jpg" });
+        const p1 = (await t.get("limit=5&shape=horizontal")).body;
+        expect(p1.items).toHaveLength(5);
+        expect(p1.totalItems).toBe(12);
+        expect(p1.shapeCounts.horizontal).toBe(12);
+        expect(p1.typeCounts).toEqual({ png: 6, jpg: 6 });
+        const p2 = (await t.get("limit=5&page=2&shape=horizontal")).body;
+        expect(p2.items).toHaveLength(5);
+        expect("shapeCounts" in p2).toBe(false);
+        expect("typeCounts" in p2).toBe(false);
+        expect("relevantTags" in p2 && p2.relevantTags !== undefined).toBe(false);
+    });
+
+    function protectedSet(opts: { locked?: string[] } = {}) {
+        const t = setup({ locked: opts.locked ?? ["secret"] });
+        t.insert("o1", { folders: '["open"]', width: 100, height: 100, ext: "png" });
+        t.insert("o2", { folders: '["openChild"]', width: 200, height: 100, ext: "jpg" });
+        t.insert("s1", { folders: '["secret"]', width: 100, height: 100, ext: "gif" });
+        t.insert("m1", { folders: "{}", width: 100, height: 100, ext: "bmp" });
+        t.insert("t1", { folders: "[]", width: 100, height: 100, ext: "webp", isDeleted: 1 });
+        t.insert("u1", { folders: "[]", width: 100, height: 300, ext: "png" });
+        return t;
+    }
+
+    test("facets honor lock, malformed-membership, trash, folder recursion, uncategorized and untagged", async () => {
+        const t = protectedSet();
+        // fail closed: locked s1 and malformed m1 never count; trash is hidden
+        let b = (await t.get()).body;
+        expect(b.typeCounts).toEqual({ png: 2, jpg: 1 });
+        expect(b.shapeCounts).toEqual(shapes({ square: 1, horizontal: 1, vertical: 1, "panoramic-horizontal": 1, "panoramic-vertical": 1 }));
+        expect((await t.get("folderId=open")).body.typeCounts).toEqual({ png: 1 });
+        expect((await t.get("folderId=open&recursive=true")).body.typeCounts).toEqual({ png: 1, jpg: 1 });
+        expect((await t.get("folderId=open&recursive=true&shape=vertical")).body.typeCounts).toEqual({});
+        expect((await t.get("specialFilter=trash")).body.typeCounts).toEqual({ webp: 1 });
+        expect((await t.get("specialFilter=uncategorized")).body.typeCounts).toEqual({ png: 1 });
+        expect((await t.get("specialFilter=untagged")).body.typeCounts).toEqual({ png: 2, jpg: 1 });
+        // unlocking every lock (verified cookie) ends fail-closed exclusion: the
+        // locked rows and the malformed-membership row join the facets
+        b = (await t.get("", ["secret"])).body;
+        expect(b.typeCounts).toEqual({ png: 2, jpg: 1, gif: 1, bmp: 1 });
+        expect(b.shapeCounts.square).toBe(3);
+        // with no locks, malformed membership degrades to folderless
+        const open = protectedSet({ locked: [] });
+        expect((await open.get("specialFilter=uncategorized")).body.typeCounts).toEqual({ png: 1, bmp: 1 });
+    });
+
+    test("locked folder early-empty response carries safe empty page-1 facets only", async () => {
+        const t = protectedSet();
+        const p1 = (await t.get("folderId=secret")).body;
+        expect(p1.items).toEqual([]);
+        expect(p1.totalItems).toBe(0);
+        expect(p1.shapeCounts).toEqual(ZERO_SHAPES);
+        expect(p1.typeCounts).toEqual({});
+        const p2 = (await t.get("folderId=secret&page=2")).body;
+        expect("shapeCounts" in p2).toBe(false);
+        expect("typeCounts" in p2).toBe(false);
+    });
+
+    test("not-ready lock metadata still answers 503 with shape/type params present", async () => {
+        const t = setup();
+        const handler = createItemsHandler({
+            db: t.db, ensureLockState: async () => { },
+            getLockState: () => ({ ready: false, folders: [], lockedFolderIds: new Set() }),
+            subtreeFolderIds: () => null
+        });
+        const res = await handler({ request: new Request("http://localhost/api/items?shape=square&type=png") } as any) as Response;
+        expect(res.status).toBe(503);
+    });
+
+    test("malformed new params -> sanitized 400, never a silently broadened result", async () => {
+        const t = dataset();
+        const bad = [
+            "shape=banana", "excludedShape=", "shape=horizontal,vertical", "ratioWidth=4", "ratioHeight=3",
+            "ratioWidth=0&ratioHeight=3", "ratioWidth=1.5&ratioHeight=3", "ratioWidth=1e3&ratioHeight=3",
+            "ratioWidth=-4&ratioHeight=3", "ratioWidth=10001&ratioHeight=3", "ratioWidth=&ratioHeight=",
+            `type=${"x".repeat(40)}`,
+            Array.from({ length: 70 }, (_, i) => `excludedType=t${i}`).join("&"),
+            `ratioWidth=${encodeURIComponent("4; DROP TABLE items")}&ratioHeight=3`,
+        ];
+        for (const q of bad) {
+            const { res, body } = await t.get(q);
+            expect(res.status).toBe(400);
+            expect(body).toEqual({ error: "Invalid filter parameters" });
+        }
+        expect((await t.get()).body.totalItems).toBe(7);
+    });
+
+    test("injection-shaped type values cannot alter the SQL", async () => {
+        const t = dataset();
+        for (const v of ["png' OR 1=1 --", "png') OR ('1'='1", "%", "png\"; DROP TABLE items; --"]) {
+            const { res, body } = await t.get(`type=${encodeURIComponent(v)}`);
+            expect(res.status).toBe(200);
+            expect(body.items).toEqual([]);
+            expect(body.totalItems).toBe(0);
+            const ex = await t.get(`excludedType=${encodeURIComponent(v)}`);
+            expect(ex.body.totalItems).toBe(7);
+        }
+        expect((db => (db.query("SELECT COUNT(*) AS n FROM items").get() as any).n)(t.db)).toBe(7);
+    });
+
+    test("legacy requests: same items, count and tag counts; shape/type filters do not change the contextual tag list", async () => {
+        const t = dataset();
+        const legacy = (await t.get("tag=x&sortBy=name&sortOrder=asc")).body;
+        expect(legacy.items.map((i: any) => i.id)).toEqual(["a", "b"]);
+        expect(legacy.totalItems).toBe(2);
+        const plain = (await t.get()).body;
+        const filtered = (await t.get("shape=vertical&type=jpg")).body;
+        expect(filtered.items.map((i: any) => i.id)).toEqual(["d"]);
+        expect(filtered.relevantTags).toEqual(plain.relevantTags);
+        expect(filtered.relevantTagCounts).toEqual(plain.relevantTagCounts);
+        expect(plain.relevantTagCounts).toEqual({ x: 2, y: 1 });
+    });
+
+    test("a failing shape facet query is logged, shapeCounts omitted (unavailable), items and typeCounts kept", async () => {
+        const logs: any[][] = [];
+        let real: Database;
+        const wrapper: ItemsHandlerDeps["db"] = {
+            query(sql: string) {
+                if (sql.includes("SUM(CASE")) throw new Error("SECRET shape failure");
+                return real.query(sql) as any;
+            }
+        };
+        const t = setup({ logs, db: wrapper });
+        real = t.db;
+        t.insert("a", { ext: "png" });
+        const { res, body } = await t.get();
+        expect(res.status).toBe(200);
+        expect(body.items).toHaveLength(1);
+        expect("shapeCounts" in body).toBe(false);
+        expect(body.typeCounts).toEqual({ png: 1 });
+        expect(JSON.stringify(body)).not.toContain("SECRET");
+        expect(logs.some(l => String(l[1]).includes("SECRET shape failure"))).toBe(true);
+    });
+
+    test("a failing type facet query is logged, typeCounts omitted, shapeCounts and tags kept", async () => {
+        const logs: any[][] = [];
+        let real: Database;
+        const wrapper: ItemsHandlerDeps["db"] = {
+            query(sql: string) {
+                if (sql.includes("GROUP BY LOWER(")) throw new Error("SECRET type failure");
+                return real.query(sql) as any;
+            }
+        };
+        const t = setup({ logs, db: wrapper });
+        real = t.db;
+        t.insert("a", { tags: '["x"]' });
+        const { res, body } = await t.get();
+        expect(res.status).toBe(200);
+        expect(body.items).toHaveLength(1);
+        expect("typeCounts" in body).toBe(false);
+        expect(body.shapeCounts.square).toBe(1);
+        expect(body.relevantTagCounts).toEqual({ x: 1 });
+        expect(logs.some(l => String(l[1]).includes("SECRET type failure"))).toBe(true);
     });
 });

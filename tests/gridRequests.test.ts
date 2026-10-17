@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import {
     GridRequestController,
     buildItemsUrl,
+    facetContextKeys,
+    hasMoreAfterPage,
     parseItemsPayload,
     resolveSelection,
     type GridErrorKind,
@@ -14,6 +16,7 @@ const baseFilters: FilterState = {
     search: '', folderId: null, includedTags: [], excludedTags: [], tagRule: 'all',
     color: null, colorAccuracy: 60, sortBy: 'modificationTime', sortOrder: 'desc',
     specialFilter: null, recursive: false,
+    includedShapes: [], excludedShapes: [], customRatio: { width: 4, height: 3 }, includedTypes: [], excludedTypes: [],
 };
 const f = (over: Partial<FilterState> = {}): FilterState => ({ ...baseFilters, ...over });
 
@@ -404,6 +407,141 @@ describe('modal selection', () => {
     });
 });
 
+describe('exhaustion detection', () => {
+    test('hasMoreAfterPage: short/empty pages always end; valid totals end early; invalid totals are ignored', () => {
+        expect(hasMoreAfterPage(2, 2, 2, 99)).toBe(true);
+        expect(hasMoreAfterPage(4, 2, 2, 4)).toBe(false); // exact multiple of the page size
+        expect(hasMoreAfterPage(3, 1, 2, 99)).toBe(false); // short final page, stale-high total
+        expect(hasMoreAfterPage(2, 0, 2, 99)).toBe(false); // empty terminal page, stale-high total
+        expect(hasMoreAfterPage(2, 2, 2, 0)).toBe(false);
+        for (const bad of [-1, 2.5, NaN, Infinity, '4', null, undefined]) {
+            expect(hasMoreAfterPage(4, 2, 2, bad)).toBe(true);
+        }
+    });
+
+    test('exact page-size total stops without a trailing empty request', async () => {
+        const { calls, ctl } = harness();
+        ctl.refresh(f());
+        calls[0].resolve(page(['1', '2'], { totalItems: 4 }));
+        await tick();
+        expect(ctl.state.hasMore).toBe(true);
+        ctl.loadMore();
+        calls[1].resolve(page(['3', '4'], { totalItems: 4 }));
+        await tick();
+        expect(ctl.state.hasMore).toBe(false);
+        ctl.loadMore();
+        expect(calls).toHaveLength(2);
+    });
+
+    test('stale-high total: an empty terminal page still ends paging', async () => {
+        const { calls, ctl } = harness();
+        ctl.refresh(f());
+        calls[0].resolve(page(['1', '2'], { totalItems: 50 }));
+        await tick();
+        ctl.loadMore();
+        calls[1].resolve(page([], { totalItems: 50 }));
+        await tick();
+        expect(ctl.state.hasMore).toBe(false);
+        expect(ids(ctl)).toEqual(['1', '2']);
+    });
+
+    test('invalid (non-integer) total falls back to short-page detection', async () => {
+        const { calls, ctl } = harness();
+        ctl.refresh(f());
+        calls[0].resolve(page(['1', '2'], { totalItems: 2.5 }));
+        await tick();
+        expect(ctl.state.hasMore).toBe(true);
+        ctl.loadMore();
+        calls[1].resolve(page(['3'], { totalItems: 2.5 }));
+        await tick();
+        expect(ctl.state.hasMore).toBe(false);
+    });
+});
+
+describe('onSettled continuation', () => {
+    function settledHarness(onSettledAction: (ctl: GridRequestController<{ id: string }>) => void, onChange?: (s: GridState<{ id: string }>) => void) {
+        const calls: Call[] = [];
+        const fetchFn: GridFetch = (url, init) =>
+            new Promise<Response>((resolve, reject) => { calls.push({ url, signal: init.signal, resolve, reject }); });
+        let settledCount = 0;
+        const ctl: GridRequestController<{ id: string }> = new GridRequestController<{ id: string }>({
+            fetchFn,
+            pageSize: 2,
+            onChange: s => onChange?.(s),
+            onSettled: () => { settledCount++; onSettledAction(ctl); },
+        });
+        return { calls, ctl, settled: () => settledCount };
+    }
+
+    test('loadMore() from onChange is dropped (still in flight) but works from onSettled', async () => {
+        // The race: onChange fires before the in-flight slot is released.
+        let continueFromChange = false;
+        const a = settledHarness(() => { }, s => { if (continueFromChange && !s.loading) a.ctl.loadMore(); });
+        a.ctl.refresh(f());
+        continueFromChange = true;
+        a.calls[0].resolve(page(['1', '2']));
+        await tick();
+        expect(a.calls).toHaveLength(1); // continuation from onChange was swallowed
+
+        const h = settledHarness(c => { if (c.state.hasMore && !c.state.error) c.loadMore(); });
+        h.ctl.refresh(f());
+        h.calls[0].resolve(page(['1', '2']));
+        await tick();
+        expect(h.calls).toHaveLength(2); // continued from onSettled
+        expect(new URL(h.calls[1].url, 'http://x').searchParams.get('page')).toBe('2');
+    });
+
+    test('settles after success and after failure, once per request', async () => {
+        const h = settledHarness(() => { });
+        h.ctl.refresh(f());
+        h.calls[0].resolve(page(['1', '2']));
+        await tick();
+        expect(h.settled()).toBe(1);
+        h.ctl.loadMore();
+        h.calls[1].reject(new TypeError('Failed to fetch'));
+        await tick();
+        expect(h.settled()).toBe(2);
+        expect(h.ctl.state.error).not.toBeNull();
+    });
+
+    test('stale-generation and disposed requests never report settled', async () => {
+        const h = settledHarness(() => { });
+        h.ctl.refresh(f({ search: 'a' }));
+        h.ctl.refresh(f({ search: 'b' }));
+        h.calls[0].resolve(page(['x1', 'x2']));
+        await tick();
+        expect(h.settled()).toBe(0);
+        h.ctl.dispose();
+        h.calls[1].resolve(page(['y1', 'y2']));
+        await tick();
+        expect(h.settled()).toBe(0);
+    });
+
+    test('requests continued from onSettled stay single-flight', async () => {
+        const h = settledHarness(c => { c.loadMore(); c.loadMore(); });
+        h.ctl.refresh(f());
+        h.calls[0].resolve(page(['1', '2']));
+        await tick();
+        expect(h.calls).toHaveLength(2);
+    });
+});
+
+describe('reload and modal selection', () => {
+    test('reload starts a new generation with an empty result set, so the open item no longer resolves', async () => {
+        const { calls, ctl } = harness();
+        ctl.refresh(f({ search: 'x' }));
+        calls[0].resolve(page(['1', '2']));
+        await tick();
+        expect(resolveSelection(ctl.state.items, '2')).toBe(1);
+
+        const before = ctl.generation;
+        ctl.reload();
+        expect(ctl.generation).toBe(before + 1);
+        expect(resolveSelection(ctl.state.items, '2')).toBeNull();
+        expect(new URL(calls[1].url, 'http://x').searchParams.get('search')).toBe('x');
+    });
+});
+
 describe('buildItemsUrl', () => {
     test('keeps the established query contract', () => {
         const u = new URL(buildItemsUrl(f({ excludedTags: ['x'], recursive: true, folderId: 'F', color: '#fff' }), 3), 'http://x');
@@ -414,5 +552,134 @@ describe('buildItemsUrl', () => {
         expect(u.searchParams.get('excludedTags')).toBe('x');
         expect(u.searchParams.get('folderId')).toBe('F');
         expect(u.searchParams.get('colorAccuracy')).toBe('60');
+    });
+
+    test('shape/type facets use repeated params and always send the committed custom pair', () => {
+        const u = new URL(buildItemsUrl(f({
+            includedShapes: ['horizontal', '4:3'], excludedShapes: ['panoramic-horizontal'],
+            includedTypes: ['png', 'jpg'], excludedTypes: ['gif', ''], customRatio: { width: 21, height: 9 },
+        }), 1), 'http://x');
+        expect(u.searchParams.getAll('shape')).toEqual(['horizontal', '4:3']);
+        expect(u.searchParams.getAll('excludedShape')).toEqual(['panoramic-horizontal']);
+        expect(u.searchParams.getAll('type')).toEqual(['png', 'jpg']);
+        expect(u.searchParams.getAll('excludedType')).toEqual(['gif', '']);
+        expect(u.searchParams.get('ratioWidth')).toBe('21');
+        expect(u.searchParams.get('ratioHeight')).toBe('9');
+        const plain = new URL(buildItemsUrl(f(), 1), 'http://x').searchParams;
+        expect(plain.has('shape') || plain.has('type') || plain.has('excludedShape') || plain.has('excludedType')).toBe(false);
+        expect(plain.get('ratioWidth')).toBe('4');
+        expect(plain.get('ratioHeight')).toBe('3');
+    });
+});
+
+describe('facet payloads', () => {
+    const shapeOk = { horizontal: 1, vertical: 2, square: 0, 'panoramic-horizontal': 0, 'panoramic-vertical': 0, '4:3': 1, '3:4': 0, '16:9': 0, '9:16': 0, custom: 1 };
+
+    test('valid maps are accepted; {} is a valid empty typeCounts', () => {
+        const p = parseItemsPayload<{ id: string }>({ items: [], totalItems: 0, shapeCounts: shapeOk, typeCounts: {} });
+        expect(p.shapeCounts).toEqual(shapeOk);
+        expect(p.typeCounts).toEqual({});
+    });
+
+    test('bad maps become unavailable (null) without failing the items payload', () => {
+        const bad = (shapeCounts: unknown, typeCounts: unknown) => parseItemsPayload<{ id: string }>({ items: [], totalItems: 0, shapeCounts, typeCounts });
+        expect(bad(undefined, undefined)).toMatchObject({ shapeCounts: null, typeCounts: null });
+        expect(bad(null, null)).toMatchObject({ shapeCounts: null, typeCounts: null });
+        expect(bad([], [1]).shapeCounts).toBeNull();
+        expect(bad({ ...shapeOk, horizontal: -1 }, {}).shapeCounts).toBeNull();
+        expect(bad({ ...shapeOk, horizontal: 1.5 }, {}).shapeCounts).toBeNull();
+        expect(bad({ ...shapeOk, horizontal: '1' }, {}).shapeCounts).toBeNull();
+        expect(bad({ ...shapeOk, horizontal: null }, {}).shapeCounts).toBeNull();
+        expect(bad({ ...shapeOk, bogus: 1 }, {}).shapeCounts).toBeNull();
+        const { custom, ...missing } = shapeOk;
+        expect(bad(missing, {}).shapeCounts).toBeNull();
+        expect(bad(shapeOk, { png: -1 }).typeCounts).toBeNull();
+        expect(bad(shapeOk, { png: Infinity }).typeCounts).toBeNull();
+        expect(bad(shapeOk, { png: 'x' }).typeCounts).toBeNull();
+        expect(bad(shapeOk, { ['x'.repeat(33)]: 1 }).typeCounts).toBeNull();
+        expect(bad(shapeOk, []).typeCounts).toBeNull();
+    });
+
+    test('a hostile __proto__ key stays an own data key and does not pollute', () => {
+        const typeCounts = JSON.parse('{"__proto__": 3, "png": 1}');
+        const p = parseItemsPayload<{ id: string }>({ items: [], totalItems: 0, typeCounts });
+        expect(Object.getPrototypeOf(p.typeCounts)).toBe(Object.prototype);
+        expect(({} as any).polluted).toBeUndefined();
+        expect(Object.keys(p.typeCounts!).sort()).toEqual(['__proto__', 'png']);
+    });
+
+    test('facets publish for current-generation page 1 only', async () => {
+        const calls: Call[] = [];
+        const facets: unknown[] = [];
+        const ctl = new GridRequestController<{ id: string }>({
+            fetchFn: (url, init) => new Promise<Response>((resolve, reject) => { calls.push({ url, signal: init.signal, resolve, reject }); }),
+            pageSize: 2,
+            onChange: () => { },
+            onFacets: u => facets.push(u),
+        });
+        ctl.refresh(f({ search: 'old' }));
+        ctl.refresh(f({ search: 'new' }));
+        calls[1].resolve(page(['n1', 'n2'], { shapeCounts: shapeOk, typeCounts: { png: 2 } }));
+        await tick();
+        calls[0].resolve(page(['o1', 'o2'], { shapeCounts: { ...shapeOk, horizontal: 99 }, typeCounts: { gif: 9 } })); // stale generation
+        await tick();
+        expect(facets).toEqual([{ shape: shapeOk, type: { png: 2 } }]);
+
+        ctl.loadMore(); // page 2 must not publish facets
+        await tick();
+        calls[2].resolve(page(['n3'], { shapeCounts: { ...shapeOk, horizontal: 50 }, typeCounts: { bmp: 1 } }));
+        await tick();
+        expect(facets).toHaveLength(1);
+    });
+
+    test('a page-1 response without or with bad facets publishes them as unavailable', async () => {
+        const calls: Call[] = [];
+        const facets: unknown[] = [];
+        const ctl = new GridRequestController<{ id: string }>({
+            fetchFn: (url, init) => new Promise<Response>((resolve, reject) => { calls.push({ url, signal: init.signal, resolve, reject }); }),
+            onChange: () => { },
+            onFacets: u => facets.push(u),
+        });
+        ctl.refresh(f());
+        calls[0].resolve(page(['a'], { shapeCounts: { horizontal: -4 } }));
+        await tick();
+        expect(facets).toEqual([{ shape: null, type: null }]);
+    });
+
+    test('disabled refresh resets both facets to unavailable and publishes nothing from stale requests', async () => {
+        const calls: Call[] = [];
+        const facets: unknown[] = [];
+        const ctl = new GridRequestController<{ id: string }>({
+            fetchFn: (url, init) => new Promise<Response>((resolve, reject) => { calls.push({ url, signal: init.signal, resolve, reject }); }),
+            onChange: () => { },
+            onFacets: u => facets.push(u),
+        });
+        ctl.refresh(f());
+        ctl.refresh(f({ folderId: 'L' }), false);
+        expect(facets).toEqual([{ shape: null, type: null }]);
+        calls[0].resolve(page(['a'], { shapeCounts: shapeOk, typeCounts: { png: 1 } }));
+        await tick();
+        expect(facets).toHaveLength(1);
+    });
+});
+
+describe('facetContextKeys', () => {
+    test('shape key ignores the shape selection but not type/other filters or the custom pair', () => {
+        const a = facetContextKeys(f());
+        expect(facetContextKeys(f({ includedShapes: ['square'] })).shape).toBe(a.shape);
+        expect(facetContextKeys(f({ excludedShapes: ['square'] })).shape).toBe(a.shape);
+        expect(facetContextKeys(f({ sortBy: 'name' })).shape).toBe(a.shape);
+        expect(facetContextKeys(f({ includedTypes: ['png'] })).shape).not.toBe(a.shape);
+        expect(facetContextKeys(f({ search: 'x' })).shape).not.toBe(a.shape);
+        expect(facetContextKeys(f({ customRatio: { width: 1, height: 1 } })).shape).not.toBe(a.shape);
+        expect(facetContextKeys(f(), 'unlocked').shape).not.toBe(a.shape);
+    });
+
+    test('type key ignores the type selection but not shape/other filters', () => {
+        const a = facetContextKeys(f());
+        expect(facetContextKeys(f({ includedTypes: ['png'] })).type).toBe(a.type);
+        expect(facetContextKeys(f({ excludedTypes: ['png'] })).type).toBe(a.type);
+        expect(facetContextKeys(f({ includedShapes: ['square'] })).type).not.toBe(a.type);
+        expect(facetContextKeys(f({ folderId: 'F' })).type).not.toBe(a.type);
     });
 });

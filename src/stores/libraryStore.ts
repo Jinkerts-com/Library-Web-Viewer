@@ -1,5 +1,8 @@
 import { atom, map } from 'nanostores';
+import { DEFAULT_THEME, THEME_STORAGE_KEY, type Theme } from '../lib/theme';
+import { getBrowserStorage, readSavedPreferences } from '../lib/preferences';
 import { ScanClient, type ScanUiState } from '../lib/scanClient';
+import { DEFAULT_CUSTOM_RATIO, cycleInclude, toggleExclude, type CustomRatio, type ShapeKey } from '../lib/itemFacets';
 
 export interface Folder {
     id: string;
@@ -34,6 +37,13 @@ export interface FilterState {
     sortOrder: SortOrder;
     specialFilter: 'uncategorized' | 'untagged' | 'random' | 'trash' | null;
     recursive: boolean;
+    includedShapes: ShapeKey[];
+    excludedShapes: ShapeKey[];
+    /** Committed custom ratio (always sent so the Custom count exists before selection). */
+    customRatio: CustomRatio;
+    /** Lowercase extension keys, no dot; '' = no extension. */
+    includedTypes: string[];
+    excludedTypes: string[];
 }
 
 // State Atoms
@@ -55,7 +65,7 @@ export const gridRevisionStore = atom<number>(0);
 export const bumpGridRevision = () => gridRevisionStore.set(gridRevisionStore.get() + 1);
 export const layoutStore = atom<LayoutMode>('masonry');
 export const sidebarOpenStore = atom<boolean>(false);
-export const themeStore = atom<'light' | 'dark'>('light');
+export const themeStore = atom<Theme>(DEFAULT_THEME);
 export const zoomLevelStore = atom<number>(200); // Pixels, e.g. 50 to 350
 export const recentColorsStore = atom<string[]>([]); // Array of hex codes
 
@@ -71,21 +81,33 @@ export const filtersStore = map<FilterState>({
     sortBy: 'modificationTime',
     sortOrder: 'desc',
     specialFilter: null,
-    recursive: false
+    recursive: false,
+    includedShapes: [],
+    excludedShapes: [],
+    customRatio: DEFAULT_CUSTOM_RATIO,
+    includedTypes: [],
+    excludedTypes: []
 });
+
+// Facet counts for the current view context; null = unavailable (loading,
+// failed, or a view that does not fetch) — never the previous context's counts.
+export const shapeCountsStore = atom<Record<ShapeKey, number> | null>(null);
+export const typeCountsStore = atom<Record<string, number> | null>(null);
 
 // Actions
 export const setSidebarOpen = (open: boolean) => sidebarOpenStore.set(open);
 export const toggleSidebar = () => sidebarOpenStore.set(!sidebarOpenStore.get());
 export const setZoom = (zoom: number) => {
     zoomLevelStore.set(zoom);
-    localStorage.setItem('library_zoom', zoom.toString());
+    try { localStorage.setItem('library_zoom', zoom.toString()); } catch { /* storage blocked: session-only */ }
 };
 
 export const toggleTheme = () => {
     const newTheme = themeStore.get() === 'light' ? 'dark' : 'light';
     themeStore.set(newTheme);
-    localStorage.setItem('theme', newTheme);
+    try {
+        localStorage.setItem(THEME_STORAGE_KEY, newTheme);
+    } catch (e) { /* storage blocked: toggle still applies for this session */ }
     if (newTheme === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
 };
@@ -168,7 +190,7 @@ export function setSortOrder(sortOrder: SortOrder) {
 
 export function setLayout(layout: LayoutMode) {
     layoutStore.set(layout);
-    localStorage.setItem('library_layout', layout);
+    try { localStorage.setItem('library_layout', layout); } catch { /* storage blocked: session-only */ }
 }
 
 export function toggleTag(tag: string) {
@@ -201,16 +223,66 @@ export function toggleTagExclude(tag: string) {
     }
 }
 
+// Shape / type filters. Each action replaces include+exclude in ONE store update
+// so no intermediate contradictory state is ever observed or fetched.
+export function toggleShape(key: ShapeKey) {
+    const s = filtersStore.get();
+    const next = cycleInclude({ included: s.includedShapes, excluded: s.excludedShapes }, key);
+    filtersStore.set({ ...s, includedShapes: next.included, excludedShapes: next.excluded });
+}
+
+export function toggleShapeExclude(key: ShapeKey) {
+    const s = filtersStore.get();
+    const next = toggleExclude({ included: s.includedShapes, excluded: s.excludedShapes }, key);
+    filtersStore.set({ ...s, includedShapes: next.included, excludedShapes: next.excluded });
+}
+
+export function toggleType(key: string) {
+    const s = filtersStore.get();
+    const next = cycleInclude({ included: s.includedTypes, excluded: s.excludedTypes }, key);
+    filtersStore.set({ ...s, includedTypes: next.included, excludedTypes: next.excluded });
+}
+
+export function toggleTypeExclude(key: string) {
+    const s = filtersStore.get();
+    const next = toggleExclude({ included: s.includedTypes, excluded: s.excludedTypes }, key);
+    filtersStore.set({ ...s, includedTypes: next.included, excludedTypes: next.excluded });
+}
+
+export function clearShapeFilter() {
+    filtersStore.set({ ...filtersStore.get(), includedShapes: [], excludedShapes: [] });
+}
+
+export function clearTypeFilter() {
+    filtersStore.set({ ...filtersStore.get(), includedTypes: [], excludedTypes: [] });
+}
+
+/** Commit a validated custom ratio (the pair changes atomically). */
+export function setCustomRatio(ratio: CustomRatio) {
+    const current = filtersStore.get().customRatio;
+    if (current.width === ratio.width && current.height === ratio.height) return;
+    filtersStore.setKey('customRatio', { width: ratio.width, height: ratio.height });
+}
+
 export function clearFilters() {
-    filtersStore.setKey('search', '');
-    filtersStore.setKey('folderId', null);
-    filtersStore.setKey('includedTags', []);
-    filtersStore.setKey('excludedTags', []);
-    filtersStore.setKey('tagRule', 'all');
-    filtersStore.setKey('color', null);
-    filtersStore.setKey('colorAccuracy', 60);
-    filtersStore.setKey('specialFilter', null);
-    // Note: We keep sort preferences as they are usually persistent choices
+    // One update for every reset field (sort preferences are kept: they are
+    // usually persistent choices)
+    filtersStore.set({
+        ...filtersStore.get(),
+        search: '',
+        folderId: null,
+        includedTags: [],
+        excludedTags: [],
+        tagRule: 'all',
+        color: null,
+        colorAccuracy: 60,
+        specialFilter: null,
+        includedShapes: [],
+        excludedShapes: [],
+        customRatio: DEFAULT_CUSTOM_RATIO,
+        includedTypes: [],
+        excludedTypes: [],
+    });
 }
 
 export function addRecentColor(hex: string) {
@@ -218,7 +290,7 @@ export function addRecentColor(hex: string) {
     const filtered = current.filter(c => c !== hex);
     // Keep max 10 recent colors
     recentColorsStore.set([hex, ...filtered].slice(0, 10));
-    localStorage.setItem('library_recent_colors', JSON.stringify(recentColorsStore.get()));
+    try { localStorage.setItem('library_recent_colors', JSON.stringify(recentColorsStore.get())); } catch { /* storage blocked: session-only */ }
 }
 
 export function markFoldersUnlocked(ids: string[]) {
@@ -240,20 +312,13 @@ export function toggleRecursive() {
 
 // Initial client-side setup
 if (typeof window !== 'undefined') {
-    const savedLayout = localStorage.getItem('library_layout') as LayoutMode;
-    if (savedLayout) layoutStore.set(savedLayout);
+    // Theme first and independent of storage: the inline head bootstrap in index.astro
+    // already resolved saved > env > dark onto the root class.
+    themeStore.set(document.documentElement.classList.contains('dark') ? 'dark' : 'light');
 
-    const savedZoom = localStorage.getItem('library_zoom');
-    if (savedZoom) zoomLevelStore.set(parseFloat(savedZoom));
-
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    themeStore.set(savedTheme as 'light' | 'dark');
-    if (savedTheme === 'dark') document.documentElement.classList.add('dark');
-
-    const savedColors = localStorage.getItem('library_recent_colors');
-    if (savedColors) {
-        try {
-            recentColorsStore.set(JSON.parse(savedColors));
-        } catch (e) { }
-    }
+    // Every storage read is guarded; blocked storage keeps the defaults.
+    const saved = readSavedPreferences(getBrowserStorage());
+    if (saved.layout) layoutStore.set(saved.layout);
+    if (saved.zoom !== null) zoomLevelStore.set(saved.zoom);
+    if (saved.recentColors) recentColorsStore.set(saved.recentColors);
 }

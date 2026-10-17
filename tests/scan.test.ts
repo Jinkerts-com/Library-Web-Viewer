@@ -169,15 +169,21 @@ describe("genuine removal", () => {
     test("deletes the row and cache entry for an absent .info directory only", async () => {
         fx.writeItem("STAY");
         fx.writeItem("GONE");
-        const first = await fx.createIndexer().scan();
+        // The first-scan marker must be strictly later than the fixture mtimes, otherwise
+        // STAY is legitimately re-read on the second scan and its cache entry invalidated
+        const future = Date.now() + 60_000;
+        const first = await fx.createIndexer({ now: () => future }).scan();
         expect(first.status).toBe("complete");
         fx.cache.add("GONE");
         fx.cache.add("STAY");
 
         fx.removeItem("GONE");
-        const second = await fx.createIndexer().scan();
+        const second = await fx.createIndexer({ now: () => future + 1 }).scan();
 
         expect(second.status).toBe("complete");
+        // Cache-preservation premise: STAY was skipped, not re-read
+        expect(second.skipped).toBe(1);
+        expect(second.upserts).toBe(0);
         expect(second.removed).toBe(1);
         expect(fx.rowIds()).toEqual(["STAY"]);
         expect(fx.cache.has("GONE")).toBe(false);

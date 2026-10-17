@@ -1,4 +1,7 @@
 import type { FilterState } from '../stores/libraryStore';
+import {
+    DEFAULT_CUSTOM_RATIO, MAX_TYPE_FACETS, MAX_TYPE_KEY_LENGTH, SHAPE_KEYS, type ShapeKey,
+} from './itemFacets';
 
 /**
  * Request ownership + pagination state machine for the image grid, kept free of
@@ -47,6 +50,62 @@ export interface ItemsPage<T> {
     /** Present on page 1 only; [] / {} are valid "degraded" values. */
     relevantTags: string[] | null;
     relevantTagCounts: Record<string, number> | null;
+    /** Page 1 only; null = absent or invalid (unavailable), {} is a valid empty map. */
+    shapeCounts: Record<ShapeKey, number> | null;
+    typeCounts: Record<string, number> | null;
+}
+
+/** Facet publication: a present key replaces that store; null = unavailable. */
+export interface FacetUpdate {
+    shape?: Record<ShapeKey, number> | null;
+    type?: Record<string, number> | null;
+}
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** Own-key map with exactly the fixed shape keys and finite nonnegative integer values; else null. */
+export function parseShapeCounts(raw: unknown): Record<ShapeKey, number> | null {
+    if (!isPlainObject(raw)) return null;
+    const keys = Object.keys(raw);
+    if (keys.length !== SHAPE_KEYS.length) return null;
+    const out = {} as Record<ShapeKey, number>;
+    for (const key of SHAPE_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(raw, key)) return null;
+        const v = raw[key];
+        if (!isCount(v)) return null;
+        out[key] = v;
+    }
+    return out;
+}
+
+/** Bounded own-key map of extension key -> finite nonnegative integer; else null. */
+export function parseTypeCounts(raw: unknown): Record<string, number> | null {
+    if (!isPlainObject(raw)) return null;
+    const entries = Object.entries(raw);
+    if (entries.length > MAX_TYPE_FACETS) return null;
+    for (const [key, v] of entries) {
+        if (key.length > MAX_TYPE_KEY_LENGTH || !isCount(v)) return null;
+    }
+    return Object.fromEntries(entries) as Record<string, number>;
+}
+
+/**
+ * Stable identity of what each facet's counts depend on. A shape count context
+ * is everything except the shape selection (the committed custom ratio IS part
+ * of it); a type count context is everything except the type selection. Sort is
+ * irrelevant. `scope` carries request-level context (unlock set, readiness).
+ */
+export function facetContextKeys(filters: FilterState, scope: string = ''): { shape: string; type: string } {
+    const common = [
+        filters.search, filters.folderId, filters.specialFilter, filters.recursive, filters.color,
+        filters.colorAccuracy, filters.tagRule, filters.includedTags, filters.excludedTags, scope,
+    ];
+    return {
+        shape: JSON.stringify([...common, filters.includedTypes, filters.excludedTypes, filters.customRatio]),
+        type: JSON.stringify([...common, filters.includedShapes, filters.excludedShapes, filters.customRatio]),
+    };
 }
 
 export type GridFetch = (url: string, init: { signal: AbortSignal }) => Promise<Response>;
@@ -71,6 +130,16 @@ export function buildItemsUrl(filters: FilterState, page: number, limit: number 
     }
     if (filters.excludedTags && filters.excludedTags.length) params.append('excludedTags', filters.excludedTags.join(','));
 
+    // Shape/type facets: repeated params (no delimiter ambiguity). The committed
+    // custom pair is always sent so the Custom count exists before it is selected.
+    (filters.includedShapes ?? []).forEach(s => params.append('shape', s));
+    (filters.excludedShapes ?? []).forEach(s => params.append('excludedShape', s));
+    (filters.includedTypes ?? []).forEach(t => params.append('type', t));
+    (filters.excludedTypes ?? []).forEach(t => params.append('excludedType', t));
+    const ratio = filters.customRatio ?? DEFAULT_CUSTOM_RATIO;
+    params.append('ratioWidth', String(ratio.width));
+    params.append('ratioHeight', String(ratio.height));
+
     return `/api/items?${params.toString()}`;
 }
 
@@ -88,7 +157,23 @@ export function parseItemsPayload<T>(data: unknown): ItemsPage<T> {
     const counts = d.relevantTagCounts && typeof d.relevantTagCounts === 'object' && !Array.isArray(d.relevantTagCounts)
         ? d.relevantTagCounts as Record<string, number>
         : null;
-    return { items: d.items as T[], totalItems: d.totalItems, relevantTags: tags, relevantTagCounts: counts };
+    return {
+        items: d.items as T[], totalItems: d.totalItems, relevantTags: tags, relevantTagCounts: counts,
+        shapeCounts: parseShapeCounts(d.shapeCounts), typeCounts: parseTypeCounts(d.typeCounts),
+    };
+}
+
+/**
+ * Whether another page can exist after a successful response. A short (or
+ * empty) page always ends the list, so a stale or too-high reported total can
+ * never cause endless paging. A valid nonnegative integer total additionally
+ * ends the list as soon as everything is loaded, which avoids a final empty
+ * request when the count is an exact multiple of the page size.
+ */
+export function hasMoreAfterPage(loaded: number, pageLength: number, pageSize: number, totalItems: unknown): boolean {
+    if (pageLength < pageSize) return false;
+    if (typeof totalItems === 'number' && Number.isInteger(totalItems) && totalItems >= 0 && loaded >= totalItems) return false;
+    return true;
 }
 
 /** Index of the selected item within the current results, or null if it is gone. */
@@ -104,6 +189,19 @@ export interface GridControllerOptions<T> {
     onChange: (state: GridState<T>) => void;
     /** Called for current-generation page-1 responses carrying contextual tags. */
     onContextTags?: (tags: string[], counts: Record<string, number> | null) => void;
+    /**
+     * Shape/type facet counts. Fired for current-generation page-1 results only
+     * (null = absent/invalid, i.e. unavailable) and with both null when a
+     * refresh is disabled (e.g. a locked-folder screen).
+     */
+    onFacets?: (update: FacetUpdate) => void;
+    /**
+     * Called after a current-generation request has fully settled (success OR
+     * failure) and the single-flight slot is free again. Unlike onChange, which
+     * fires while the request is still marked in flight, loadMore() called from
+     * here starts a new request instead of being dropped.
+     */
+    onSettled?: (state: GridState<T>) => void;
 }
 
 export class GridRequestController<T extends { id: string }> {
@@ -111,6 +209,8 @@ export class GridRequestController<T extends { id: string }> {
     private readonly pageSize: number;
     private readonly onChange: (state: GridState<T>) => void;
     private readonly onContextTags?: (tags: string[], counts: Record<string, number> | null) => void;
+    private readonly onSettled?: (state: GridState<T>) => void;
+    private readonly onFacets?: (update: FacetUpdate) => void;
 
     private filters: FilterState | null = null;
     private abortController = new AbortController();
@@ -125,6 +225,8 @@ export class GridRequestController<T extends { id: string }> {
         this.pageSize = opts.pageSize ?? GRID_PAGE_SIZE;
         this.onChange = opts.onChange;
         this.onContextTags = opts.onContextTags;
+        this.onSettled = opts.onSettled;
+        this.onFacets = opts.onFacets;
     }
 
     get state(): GridState<T> { return this._state; }
@@ -146,6 +248,7 @@ export class GridRequestController<T extends { id: string }> {
             generation: this._state.generation + 1, enabled,
         });
         if (enabled) void this.load();
+        else this.onFacets?.({ shape: null, type: null });
     }
 
     /**
@@ -214,10 +317,14 @@ export class GridRequestController<T extends { id: string }> {
             if (page === 1 && parsed.relevantTags) {
                 this.onContextTags?.(parsed.relevantTags, parsed.relevantTagCounts);
             }
+            if (page === 1) {
+                this.onFacets?.({ shape: parsed.shapeCounts, type: parsed.typeCounts });
+            }
+            const nextItems = page === 1 ? parsed.items : [...this._state.items, ...parsed.items];
             this.set({
-                items: page === 1 ? parsed.items : [...this._state.items, ...parsed.items],
+                items: nextItems,
                 totalItems: parsed.totalItems,
-                hasMore: parsed.items.length >= this.pageSize,
+                hasMore: hasMoreAfterPage(nextItems.length, parsed.items.length, this.pageSize, parsed.totalItems),
                 page: page + 1,
                 loading: false,
                 error: null,
@@ -236,7 +343,10 @@ export class GridRequestController<T extends { id: string }> {
                 },
             });
         } finally {
-            if (isCurrent()) this.inFlight = false;
+            if (isCurrent()) {
+                this.inFlight = false;
+                this.onSettled?.(this._state);
+            }
         }
     }
 }

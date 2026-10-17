@@ -1,0 +1,214 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FacetState } from '../lib/itemFacets';
+import { focusOnMount, handleFacetEscape } from '../lib/facetPopoverFocus';
+
+/**
+ * Reusable shell + rows for the Shape and Types filters.
+ *
+ * The panel is position: fixed and positioned from the chip's bounding rect, so
+ * it is never clipped by the horizontally scrolling chip row. Below `md` it
+ * spans the viewport width (bounded); on desktop it is anchored under the chip.
+ */
+
+const MOBILE_QUERY = '(max-width: 767px)';
+
+export function useIsMobile(): boolean {
+    const [mobile, setMobile] = useState(false);
+    useEffect(() => {
+        const mq = window.matchMedia(MOBILE_QUERY);
+        const update = () => setMobile(mq.matches);
+        update();
+        mq.addEventListener('change', update);
+        return () => mq.removeEventListener('change', update);
+    }, []);
+    return mobile;
+}
+
+export const formatCount = (n: number | null): string => n === null ? '—' : n.toLocaleString();
+
+interface PanelPos { top: number; left: number; width: number | null; maxHeight: number }
+
+const DESKTOP_WIDTH = 300;
+const MARGIN = 8;
+
+function computePos(button: HTMLElement, mobile: boolean): PanelPos {
+    const rect = button.getBoundingClientRect();
+    const top = rect.bottom + 6;
+    const maxHeight = Math.max(160, window.innerHeight - top - MARGIN);
+    if (mobile) return { top, left: MARGIN, width: null, maxHeight };
+    const left = Math.min(Math.max(MARGIN, rect.left), Math.max(MARGIN, window.innerWidth - DESKTOP_WIDTH - MARGIN));
+    return { top, left, width: DESKTOP_WIDTH, maxHeight };
+}
+
+interface ChipProps {
+    /** Visible chip label, e.g. "Shape". */
+    label: string;
+    /** Number of active (included + excluded) selections; drives the badge. */
+    activeCount: number;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    onClear: () => void;
+    /** Panel body; mounted only while open, so local drafts are discarded on close. */
+    children: React.ReactNode;
+}
+
+export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClear, children }: ChipProps) {
+    const mobile = useIsMobile();
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    const [pos, setPos] = useState<PanelPos | null>(null);
+    const panelId = `facet-panel-${label.toLowerCase()}`;
+
+    const reposition = useCallback(() => {
+        if (buttonRef.current) setPos(computePos(buttonRef.current, mobile));
+    }, [mobile]);
+
+    useEffect(() => {
+        if (!open) return;
+        reposition();
+        window.addEventListener('resize', reposition);
+        window.addEventListener('scroll', reposition, true); // the chip row scrolls too
+        return () => {
+            window.removeEventListener('resize', reposition);
+            window.removeEventListener('scroll', reposition, true);
+        };
+    }, [open, reposition]);
+
+    // Latest callback without making effects depend on its (parent-created) identity.
+    const onOpenChangeRef = useRef(onOpenChange);
+    onOpenChangeRef.current = onOpenChange;
+
+    // Stable callback ref: runs only when the panel node actually mounts, so focus
+    // moves into the panel once per opening and never on later re-renders.
+    const panelFocus = useMemo(() => focusOnMount(), []);
+    const setPanelNode = useCallback((node: HTMLDivElement | null) => {
+        panelRef.current = node;
+        panelFocus(node);
+    }, [panelFocus]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onPointerDown = (e: PointerEvent) => {
+            const target = e.target as Node;
+            if (panelRef.current?.contains(target) || buttonRef.current?.contains(target)) return;
+            onOpenChangeRef.current(false);
+        };
+        document.addEventListener('pointerdown', onPointerDown);
+        return () => document.removeEventListener('pointerdown', onPointerDown);
+    }, [open]);
+
+    const onEscapeKey = (e: React.KeyboardEvent) => {
+        if (handleFacetEscape(e.key, () => onOpenChangeRef.current(false), buttonRef.current)) e.stopPropagation();
+    };
+
+    return (
+        <div className="relative shrink-0">
+            <button
+                ref={buttonRef}
+                type="button"
+                aria-haspopup="dialog"
+                aria-expanded={open}
+                aria-controls={open ? panelId : undefined}
+                onClick={() => onOpenChange(!open)}
+                onKeyDown={e => { if (open) onEscapeKey(e); }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${activeCount > 0 || open
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40'
+                    : 'border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+            >
+                {label}
+                {activeCount > 0 && (
+                    <span className="min-w-[1.25rem] px-1 rounded-full bg-blue-600 text-white text-xs leading-5 text-center" aria-label={`${activeCount} active`}>
+                        {activeCount.toLocaleString()}
+                    </span>
+                )}
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" /></svg>
+            </button>
+
+            {open && pos && (
+                <div
+                    ref={setPanelNode}
+                    id={panelId}
+                    role="dialog"
+                    aria-label={`${label} filter`}
+                    tabIndex={-1}
+                    onKeyDown={onEscapeKey}
+                    style={{ position: 'fixed', top: pos.top, left: pos.left, ...(pos.width ? { width: pos.width } : { right: MARGIN }), maxHeight: pos.maxHeight }}
+                    className="z-50 flex flex-col bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-xl rounded-lg overflow-hidden focus:outline-none"
+                >
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-200 dark:border-zinc-700">
+                        <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{label}</span>
+                        <button
+                            type="button"
+                            onClick={onClear}
+                            disabled={activeCount === 0}
+                            className="text-xs px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent"
+                        >
+                            Clear
+                        </button>
+                    </div>
+                    <div className="overflow-y-auto p-1.5">{children}</div>
+                    <div className="px-3 py-1.5 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 text-xs text-zinc-500">
+                        Click to include. Use the minus button (or right-click / Alt-click) to exclude.
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+interface RowProps {
+    label: string;
+    /** null = unavailable (loading / failed), shown as an em dash, never as 0. */
+    count: number | null;
+    state: FacetState;
+    onToggle: () => void;
+    onExclude: () => void;
+    /** Extra control after the exclude button (e.g. the Custom expander). */
+    trailing?: React.ReactNode;
+    /** Content under the row (e.g. the Custom ratio editor). */
+    children?: React.ReactNode;
+}
+
+export function FacetRow({ label, count, state, onToggle, onExclude, trailing, children }: RowProps) {
+    const excluded = state === 'excluded';
+    return (
+        <li
+            className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            onContextMenu={e => { e.preventDefault(); onExclude(); }}
+        >
+            <div className="flex items-center gap-1">
+                <label
+                    className="flex flex-1 min-w-0 items-center gap-2.5 pl-2.5 py-2 cursor-pointer select-none"
+                    onClick={e => { if (e.altKey) { e.preventDefault(); onExclude(); } }}
+                >
+                    <input
+                        type="checkbox"
+                        className="w-4 h-4 shrink-0 accent-blue-500"
+                        checked={state === 'included'}
+                        onChange={onToggle}
+                    />
+                    {excluded && (
+                        <svg className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
+                    )}
+                    <span className={`text-sm truncate ${excluded ? 'text-zinc-500 line-through' : 'text-zinc-700 dark:text-zinc-300'}`}>{label}</span>
+                    {excluded && <span className="text-xs font-medium text-red-600 dark:text-red-400">Excluded</span>}
+                </label>
+                <span className="text-xs text-zinc-500 tabular-nums shrink-0 min-w-[2rem] text-right" aria-label={count === null ? 'count unavailable' : `${count.toLocaleString()} items`}>
+                    {formatCount(count)}
+                </span>
+                <button
+                    type="button"
+                    aria-pressed={excluded}
+                    aria-label={`Exclude ${label}`}
+                    title={excluded ? 'Stop excluding' : 'Exclude'}
+                    onClick={onExclude}
+                    className={`shrink-0 p-1.5 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${excluded ? 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400' : 'text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+                >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
+                </button>
+                {trailing}
+            </div>
+            {children}
+        </li>
+    );
+}

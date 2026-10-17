@@ -3,13 +3,18 @@ import Sidebar from "../components/Sidebar.tsx";
 import Header from "../components/Header.tsx";
 import ImageGrid from "../components/ImageGrid.tsx";
 import ScanProgress from "../components/ScanProgress.tsx";
+import { parseEnvTheme, THEME_BOOTSTRAP_SCRIPT } from "../lib/theme";
 import "../styles/global.css";
+
+// Read at request time (not build time) so the published image honors runtime env.
+const defaultTheme = parseEnvTheme(process.env.VIEWER_THEME);
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class={defaultTheme === "dark" ? "dark" : undefined} data-default-theme={defaultTheme}>
   <head>
     <meta charset="UTF-8" />
+    <script is:inline set:html={THEME_BOOTSTRAP_SCRIPT}></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Library Web Viewer</title>

@@ -566,6 +566,7 @@ describe('grid refresh after scan keeps filters', () => {
     const filters: FilterState = {
         search: 'cat', folderId: 'F1', includedTags: ['a'], excludedTags: ['b'], tagRule: 'any',
         color: '#ff0000', colorAccuracy: 40, sortBy: 'name', sortOrder: 'asc', specialFilter: null, recursive: true,
+        includedShapes: [], excludedShapes: [], customRatio: { width: 4, height: 3 }, includedTypes: [], excludedTypes: [],
     };
 
     test('reload() starts a new generation with the same filters object and aborts in-flight work', async () => {

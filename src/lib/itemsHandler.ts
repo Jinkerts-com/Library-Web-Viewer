@@ -1,5 +1,10 @@
 import type { APIRoute } from 'astro';
 import { lockedFolderIdsForRequest, type LockState } from './itemAccess';
+import { parseFacetQuery, type ShapeKey } from './itemFacets';
+import {
+    appendFilters, readShapeCounts, shapeCountQuery, shapeFilter, typeCountQuery, typeFilter, zeroShapeCounts,
+    type SqlFragment,
+} from './itemFacetSql';
 import { serializeItem } from './itemSerialization';
 import { computeOffset, parseColorAccuracy, parseLimit, parsePage } from './requestParams';
 import { nonThrowingLogger } from './scan';
@@ -85,6 +90,10 @@ export function createItemsHandler(deps: ItemsHandlerDeps): APIRoute {
             const offset = computeOffset(page, limit);
             if (offset === null) return json({ error: "Invalid pagination" }, 400);
 
+            const facetQuery = parseFacetQuery(url.searchParams);
+            if (!facetQuery.ok) return json({ error: "Invalid filter parameters" }, 400);
+            const facets = facetQuery.value;
+
             let whereClause = " WHERE 1=1";
             const params: (string | number)[] = [];
 
@@ -119,7 +128,10 @@ export function createItemsHandler(deps: ItemsHandlerDeps): APIRoute {
             // Filter by Folder
             if (folderId) {
                 if (effectiveLockedIds.has(folderId)) {
-                    return json({ items: [], totalItems: 0, relevantTags: [] });
+                    return json({
+                        items: [], totalItems: 0, relevantTags: [],
+                        ...(page === 1 ? { shapeCounts: zeroShapeCounts(), typeCounts: {} } : {}),
+                    });
                 }
 
                 if (url.searchParams.get('recursive') === 'true') {
@@ -198,6 +210,14 @@ export function createItemsHandler(deps: ItemsHandlerDeps): APIRoute {
                 params.push(r, r, g, g, b, b, colorAccuracy * colorAccuracy);
             }
 
+            // Shape/type facets compose from this protected base (folder/lock/special +
+            // tags + search + color). Items add both dimensions; each facet count
+            // omits its OWN dimension's includes and excludes but keeps the other.
+            const base: SqlFragment = { sql: whereClause, params: [...params] };
+            const shapeSel = shapeFilter(facets.includedShapes, facets.excludedShapes, facets.customRatio);
+            const typeSel = typeFilter(facets.includedTypes, facets.excludedTypes);
+            const itemsWhere = appendFilters(base, shapeSel, typeSel);
+
             // Sort (keys map to fixed SQL expressions; never interpolate user input)
             const sortExpr = sortExpressions[sortBy] ?? sortExpressions.modificationTime;
             const safeOrder = sortOrder === "asc" ? "ASC" : "DESC";
@@ -208,12 +228,12 @@ export function createItemsHandler(deps: ItemsHandlerDeps): APIRoute {
                 ? ` ORDER BY RANDOM()`
                 : ` ORDER BY ${sortExpr} ${safeOrder}, modificationTime DESC, items.id ASC`;
 
-            const countRow = deps.db.query(`SELECT COUNT(*) as count FROM items ${whereClause}`).get(...params) as { count: number } | undefined;
+            const countRow = deps.db.query(`SELECT COUNT(*) as count FROM items ${itemsWhere.sql}`).get(...itemsWhere.params) as { count: number } | undefined;
             const totalItems = countRow?.count || 0;
 
             const rows = deps.db
-                .query(`SELECT * FROM items ${whereClause} ${orderClause} LIMIT ? OFFSET ?`)
-                .all(...params, limit, offset) as Record<string, unknown>[];
+                .query(`SELECT * FROM items ${itemsWhere.sql} ${orderClause} LIMIT ? OFFSET ?`)
+                .all(...itemsWhere.params, limit, offset) as Record<string, unknown>[];
             const items = rows.map(serializeItem);
 
             // Contextual Tags (with per-context usage counts)
@@ -235,7 +255,27 @@ export function createItemsHandler(deps: ItemsHandlerDeps): APIRoute {
                 }
             }
 
-            return json({ items, totalItems, relevantTags, relevantTagCounts });
+            // Facet counts (page 1 only). A failed facet query is logged and the
+            // facet is omitted (= unavailable to the client); items are kept.
+            let shapeCounts: Record<ShapeKey, number> | undefined;
+            let typeCounts: Record<string, number> | undefined;
+            if (page === 1) {
+                try {
+                    const q = shapeCountQuery(appendFilters(base, typeSel), facets.customRatio);
+                    shapeCounts = readShapeCounts(deps.db.query(q.sql).get(...q.params) as Record<string, unknown> | undefined);
+                } catch (e) {
+                    log.error("[API] /items shape counts error:", e);
+                }
+                try {
+                    const q = typeCountQuery(appendFilters(base, shapeSel));
+                    const typeRows = deps.db.query(q.sql).all(...q.params) as { ext: string; count: number }[];
+                    typeCounts = Object.fromEntries(typeRows.map(r => [String(r.ext), Number(r.count) || 0]));
+                } catch (e) {
+                    log.error("[API] /items type counts error:", e);
+                }
+            }
+
+            return json({ items, totalItems, relevantTags, relevantTagCounts, shapeCounts, typeCounts });
         } catch (err) {
             log.error("[API] /items Error:", err);
             return json({ error: GENERIC_ERROR_MESSAGE }, 500);
