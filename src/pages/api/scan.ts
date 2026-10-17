@@ -1,16 +1,14 @@
-import { performLibraryScan } from '../../lib/db';
+import { getScanStatus, startLibraryScan } from '../../lib/db';
+import { createGuardedScanRoute } from '../../lib/requestSecurity';
+import { scanCooldown, scanGuard } from '../../lib/requestGuards';
 import type { APIRoute } from 'astro';
 
-export const POST: APIRoute = async ({ request }) => {
-    try {
-        console.log("[API] Manual scan triggered");
-
-        void performLibraryScan();
-
-        return new Response(JSON.stringify({ message: "Scan started" }), {
-            headers: { "Content-Type": "application/json" }
-        });
-    } catch (error) {
-        return new Response(JSON.stringify({ error: (error as Error).message }), { status: 500 });
-    }
-}
+// 200 accepted ({ message: "Scan started" }) | 409 busy | 503 library not configured | 500 generic,
+// plus 403 (cross-origin) and 429 + Retry-After (rate limit / cooldown) from the guards.
+// Response shapes and sanitization of the scan outcomes live in lib/scanLifecycle.ts.
+export const POST: APIRoute = createGuardedScanRoute({
+    guard: scanGuard,
+    cooldown: scanCooldown,
+    isScanning: () => getScanStatus().isScanning,
+    start: startLibraryScan
+});

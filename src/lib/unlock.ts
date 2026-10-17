@@ -27,12 +27,37 @@ export function safeEquals(a: string, b: string): boolean {
 
 const COOKIE_PREFIX = 'unlocked_';
 
-export function unlockCookie(folderId: string): string {
-    return `${COOKIE_PREFIX}${encodeURIComponent(folderId)}=${signFolderId(folderId)}; HttpOnly; Path=/; SameSite=Lax`;
+export interface CookieOptions {
+    /** Adds the `Secure` attribute. Only for HTTPS: browsers drop Secure cookies set over plain HTTP. */
+    secure?: boolean;
 }
 
-export function expireUnlockCookie(folderId: string): string {
-    return `${COOKIE_PREFIX}${encodeURIComponent(folderId)}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+/**
+ * Whether unlock cookies should carry `Secure`. `COOKIE_SECURE=true|1` forces it
+ * (use behind a TLS-terminating reverse proxy, where this app only sees HTTP);
+ * `COOKIE_SECURE=false|0` forbids it; otherwise it follows the request scheme,
+ * so plain-HTTP LAN use keeps working. Forwarded-proto headers are not
+ * consulted here (they are spoofable); the request URL is whatever the server
+ * adapter derived from the actual connection.
+ */
+export function shouldUseSecureCookie(request: Request, env: Record<string, string | undefined> = process.env): boolean {
+    const flag = env.COOKIE_SECURE?.trim().toLowerCase();
+    if (flag === 'true' || flag === '1') return true;
+    if (flag === 'false' || flag === '0') return false;
+    try {
+        return new URL(request.url).protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+// No Max-Age/Expires: these are session cookies, as before
+export function unlockCookie(folderId: string, { secure = false }: CookieOptions = {}): string {
+    return `${COOKIE_PREFIX}${encodeURIComponent(folderId)}=${signFolderId(folderId)}; HttpOnly; Path=/; SameSite=Lax${secure ? '; Secure' : ''}`;
+}
+
+export function expireUnlockCookie(folderId: string, { secure = false }: CookieOptions = {}): string {
+    return `${COOKIE_PREFIX}${encodeURIComponent(folderId)}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`;
 }
 
 // Folder ids whose unlock cookies carry a valid signature
@@ -47,7 +72,13 @@ export function getUnlockedFolderIds(request: Request): Set<string> {
         const name = part.slice(0, eq).trim();
         const value = part.slice(eq + 1).trim();
         if (name.startsWith(COOKIE_PREFIX) && value) {
-            const folderId = decodeURIComponent(name.slice(COOKIE_PREFIX.length));
+            // A malformed cookie name (bad percent-encoding) is just an invalid cookie
+            let folderId: string;
+            try {
+                folderId = decodeURIComponent(name.slice(COOKIE_PREFIX.length));
+            } catch {
+                continue;
+            }
             if (verifyFolderId(folderId, value)) ids.add(folderId);
         }
     }

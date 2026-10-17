@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro';
 import { scanEmitter, getScanStatus } from '../../../lib/db';
 
 export const GET: APIRoute = async ({ request }) => {
-    let cleanup: () => void;
+    let cleanup: () => void = () => { };
 
     const stream = new ReadableStream({
         start(controller) {
@@ -17,7 +17,9 @@ export const GET: APIRoute = async ({ request }) => {
                 }
             };
 
-            // Send initial status immediately
+            // Send initial status immediately. Every message (including the terminal
+            // 'complete' one, which carries isScanning:false plus outcome/error) is a
+            // superset of { isScanning, scannedCount }, so older readers keep working.
             send(getScanStatus());
 
             const listener = (data: any) => send(data);

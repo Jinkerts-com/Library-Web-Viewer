@@ -32,3 +32,6 @@ _legacy/
 
 # config files
 config.json
+
+# internal working docs (never commit)
+docs/

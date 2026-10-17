@@ -4,6 +4,7 @@ import path from 'path';
 import sharp from 'sharp';
 import { exiftool } from 'exiftool-vendored';
 import { libraryPath } from './db';
+import { isSafeItemId, resolveCacheFile, resolveItemDir, realFileInside, isAuxiliaryItemFile, isLibraryThumbnailFile } from './mediaPaths';
 
 export const CACHE_DIR = path.join(process.cwd(), 'db', 'cache', 'thumbnails');
 export const PREVIEW_CACHE_DIR = path.join(process.cwd(), 'db', 'cache', 'previews');
@@ -16,39 +17,64 @@ if (!fs.existsSync(PREVIEW_CACHE_DIR)) {
     fs.mkdirSync(PREVIEW_CACHE_DIR, { recursive: true });
 }
 
-export function deleteItemCache(itemId: string) {
-    try {
-        const thumbPath = path.join(CACHE_DIR, `${itemId}.webp`);
-        if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+// Reporting is best-effort: a throwing reporter must not change a skip/fallback into an escaped exception.
+function reportError(...args: any[]) {
+    try { console.error(...args); } catch { }
+}
 
-        const previewPath = path.join(PREVIEW_CACHE_DIR, `${itemId}.webp`);
+/** Ends the shared ExifTool child process (safe if it was never started); CLI scripts call this on shutdown. */
+export async function shutdownExiftool(): Promise<void> {
+    await exiftool.end();
+}
+
+export function deleteItemCache(itemId: string) {
+    // Validated here, independently of any caller: an unsafe id never reaches unlink
+    const thumbPath = resolveCacheFile(CACHE_DIR, itemId);
+    const previewPath = resolveCacheFile(PREVIEW_CACHE_DIR, itemId);
+    if (!thumbPath || !previewPath) {
+        reportError("Refusing to delete cache for an invalid item id");
+        return;
+    }
+    try {
+        if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
         if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath);
     } catch (e) {
-        console.error(`Failed to delete cache for ${itemId}:`, e);
+        reportError(`Failed to delete cache for ${itemId}:`, e);
+    }
+}
+
+/** Existing, contained (realpath), regular source file in the item dir, or null. */
+function safeSourcePath(imagesRoot: string, itemFolder: string, fileName: string): string | null {
+    const real = realFileInside(imagesRoot, path.join(itemFolder, fileName));
+    if (!real) return null;
+    try {
+        return path.dirname(real) === fs.realpathSync(itemFolder) ? real : null;
+    } catch {
+        return null;
     }
 }
 
 export async function generateThumbnail(itemId: string): Promise<Buffer | null> {
-    if (!libraryPath || !itemId) return null;
+    if (!libraryPath || !isSafeItemId(itemId)) return null;
 
-    const cacheFilePath = path.join(CACHE_DIR, `${itemId}.webp`);
+    const cacheFilePath = resolveCacheFile(CACHE_DIR, itemId);
+    if (!cacheFilePath) return null;
 
     if (fs.existsSync(cacheFilePath)) {
         try {
             return await fs.promises.readFile(cacheFilePath);
         } catch (e) {
-            console.error(`Error reading cache for ${itemId}:`, e);
+            reportError(`Error reading cache for ${itemId}:`, e);
         }
     }
 
     const imagesPath = path.join(libraryPath, "images");
-    const itemFolder = path.join(imagesPath, itemId + ".info");
-
-    if (!fs.existsSync(itemFolder)) return null;
+    const itemFolder = resolveItemDir(libraryPath, itemId);
+    if (!itemFolder || !fs.existsSync(itemFolder)) return null;
 
     try {
-        const files = await fs.promises.readdir(itemFolder);
-        let sourceFile = files.find(f => f.endsWith("_thumbnail.png") || f.endsWith("_thumbnail.jpg"));
+        const files = (await fs.promises.readdir(itemFolder)).sort();
+        let sourceFile = files.find(f => isLibraryThumbnailFile(f));
 
         if (!sourceFile) {
             const supportedExts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.gif', '.avif'];
@@ -60,7 +86,8 @@ export async function generateThumbnail(itemId: string): Promise<Buffer | null> 
 
         if (!sourceFile) return null;
 
-        const filePath = path.join(itemFolder, sourceFile);
+        const filePath = safeSourcePath(imagesPath, itemFolder, sourceFile);
+        if (!filePath) return null;
 
         const optimizedBuffer = await sharp(filePath)
             .rotate()
@@ -72,12 +99,13 @@ export async function generateThumbnail(itemId: string): Promise<Buffer | null> 
 
         return optimizedBuffer;
     } catch (error) {
-        console.error(`Error processing thumbnail for ${itemId}:`, error);
+        reportError(`Error processing thumbnail for ${itemId}:`, error);
         return null;
     }
 }
 
 export async function generatePreview(itemId: string, originalExt: string): Promise<Buffer | null> {
+    if (!isSafeItemId(itemId)) return null;
     const existingJob = previewJobs.get(itemId);
     if (existingJob) return existingJob;
 
@@ -89,33 +117,34 @@ export async function generatePreview(itemId: string, originalExt: string): Prom
 }
 
 async function generatePreviewBuffer(itemId: string, originalExt: string): Promise<Buffer | null> {
-    if (!libraryPath || !itemId || !originalExt) return null;
+    if (!libraryPath || !isSafeItemId(itemId) || !originalExt) return null;
 
-    const cacheFilePath = path.join(PREVIEW_CACHE_DIR, `${itemId}.webp`);
+    const cacheFilePath = resolveCacheFile(PREVIEW_CACHE_DIR, itemId);
+    if (!cacheFilePath) return null;
 
     if (fs.existsSync(cacheFilePath)) {
         try {
             return await fs.promises.readFile(cacheFilePath);
         } catch (e) {
-            console.error(`Error reading preview cache for ${itemId}:`, e);
+            reportError(`Error reading preview cache for ${itemId}:`, e);
         }
     }
 
     const imagesPath = path.join(libraryPath, "images");
-    const itemFolder = path.join(imagesPath, itemId + ".info");
-
-    if (!fs.existsSync(itemFolder)) return null;
+    const itemFolder = resolveItemDir(libraryPath, itemId);
+    if (!itemFolder || !fs.existsSync(itemFolder)) return null;
 
     try {
-        const files = await fs.promises.readdir(itemFolder);
+        const files = (await fs.promises.readdir(itemFolder)).sort();
         const sourceFile = files.find(f => {
             const ext = path.extname(f).toLowerCase();
-            return ext === `.${originalExt.toLowerCase()}` && f !== 'metadata.json' && !f.endsWith('_thumbnail.png') && !f.endsWith('_thumbnail.jpg');
+            return ext === `.${originalExt.toLowerCase()}` && !isAuxiliaryItemFile(f);
         });
 
         if (!sourceFile) return null;
 
-        const filePath = path.join(itemFolder, sourceFile);
+        const filePath = safeSourcePath(imagesPath, itemFolder, sourceFile);
+        if (!filePath) return null;
 
         try {
             const optimizedBuffer = await sharp(filePath)
@@ -183,13 +212,13 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
                     await fs.promises.rm(tempRawPreviewPath, { force: true });
                 } catch (exifError) {
                     await fs.promises.rm(tempRawPreviewPath, { force: true });
-                    console.error(`exiftool extract failed for ${itemId}, jumping to library thumbnail...`);
+                    reportError(`exiftool extract failed for ${itemId}, jumping to library thumbnail...`);
                 }
 
-                const fallbackFile = files.find(f => f.endsWith('_thumbnail.png') || f.endsWith('_thumbnail.jpg'));
+                const fallbackFile = files.find(f => isLibraryThumbnailFile(f));
+                const fallbackPath = fallbackFile ? safeSourcePath(imagesPath, itemFolder, fallbackFile) : null;
 
-                if (fallbackFile) {
-                    const fallbackPath = path.join(itemFolder, fallbackFile);
+                if (fallbackPath) {
                     const fallbackBuffer = await sharp(fallbackPath)
                         .rotate()
                         .resize({ width: 2560, withoutEnlargement: true })
@@ -201,11 +230,11 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
                 }
             }
 
-            console.error(`Error processing preview for ${itemId}:`, error);
+            reportError(`Error processing preview for ${itemId}:`, error);
             return null;
         }
     } catch (fsError) {
-        console.error(`Error reading directory for preview ${itemId}:`, fsError);
+        reportError(`Error reading directory for preview ${itemId}:`, fsError);
         return null;
     }
 }

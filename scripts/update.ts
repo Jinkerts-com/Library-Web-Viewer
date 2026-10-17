@@ -1,25 +1,24 @@
 
-import { initDB, performLibraryScan, scanEmitter } from '../src/lib/db';
+import { initDB, performLibraryScan, scanEmitter, closeResources } from '../src/lib/db';
+import { EXIT_CODES, finishCli, runScanCommand } from '../src/lib/scanLifecycle';
 
+// Exit codes: 0 success, 1 failure, 2 partial (some items unreadable).
 async function runUpdate() {
     console.log("==========================================");
     console.log("      Eagle Web Viewer - Update Lib       ");
     console.log("==========================================");
 
-    initDB();
-
     console.log("\n[UPDATE] Scanning for changes...");
-
-    scanEmitter.on('progress', (data) => {
-        process.stdout.write(`\r[UPDATE] Processed: ${data.scannedCount}/${data.total}`);
+    return runScanCommand({
+        label: "UPDATE",
+        scan: performLibraryScan,
+        emitter: scanEmitter,
+        prepare: initDB,
+        cleanup: closeResources
     });
-
-    scanEmitter.on('complete', (data) => {
-        console.log(`\n[UPDATE] Update complete! Total items: ${data.scannedCount}`);
-        process.exit(0);
-    });
-
-    await performLibraryScan();
 }
 
-runUpdate();
+runUpdate().then(finishCli, (error) => {
+    console.error("[UPDATE] FAILED unexpectedly:", error);
+    finishCli(EXIT_CODES.FAILURE);
+});

@@ -1,25 +1,9 @@
-
 import { generateThumbnail } from '../../../lib/thumbnailUtils';
-import { getPlaceholderResponse } from '../../../lib/placeholder';
-import type { APIRoute } from 'astro';
+import { createThumbnailHandler } from '../../../lib/mediaHandlers';
+import { productionAccessDeps, ensureLockState } from '../../../lib/mediaAccess';
 
-export const GET: APIRoute = async ({ params }) => {
-    const itemId = params.id;
-
-    if (!itemId) {
-        return getPlaceholderResponse();
-    }
-
-    const buffer = await generateThumbnail(itemId);
-
-    if (buffer) {
-        return new Response(buffer as unknown as BodyInit, {
-            headers: {
-                "Content-Type": "image/webp",
-                "Cache-Control": "public, max-age=31536000, immutable"
-            }
-        });
-    } else {
-        return getPlaceholderResponse();
-    }
-}
+export const GET = createThumbnailHandler({
+    access: productionAccessDeps,
+    prepare: ensureLockState,
+    generateThumbnail
+});

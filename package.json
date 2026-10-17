@@ -11,6 +11,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "test": "bun test",
     "start": "bun run scripts/start.ts",
     "generate-thumbnails": "bun run scripts/generate_thumbnails.ts",
     "setup": "VERBOSE=true bun run scripts/setup.ts",
