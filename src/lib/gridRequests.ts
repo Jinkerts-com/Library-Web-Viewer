@@ -148,6 +148,16 @@ export class GridRequestController<T extends { id: string }> {
         if (enabled) void this.load();
     }
 
+    /**
+     * Data changed on the server (e.g. a rescan finished): start a new
+     * generation with the SAME filters and enabled state, so the user's view
+     * is kept while page 1 is refetched. No-op before the first refresh().
+     */
+    reload(): void {
+        if (!this.filters) return;
+        this.refresh(this.filters, this._state.enabled);
+    }
+
     /** Infinite-scroll trigger: no-op while loading, errored, exhausted or disabled. */
     loadMore(): void {
         if (this._state.error) return;

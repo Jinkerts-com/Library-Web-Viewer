@@ -343,7 +343,8 @@ export class LibraryIndexer {
                 throw new Error(`Images directory not found: ${this.imagesDir}`);
             }
             const allNames = await this.fsOps.readdir(this.imagesDir);
-            infoFolderNames = allNames.filter((name) => name.endsWith(INFO_SUFFIX));
+            // readdir order is filesystem-defined (ext4 is hash-ordered); sort so batches are deterministic
+            infoFolderNames = allNames.filter((name) => name.endsWith(INFO_SUFFIX)).sort();
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.log.error(`[SCAN] Could not enumerate ${this.imagesDir}; leaving the index untouched (no cleanup). ${message}`);

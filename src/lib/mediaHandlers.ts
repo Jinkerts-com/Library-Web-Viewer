@@ -4,7 +4,11 @@ import type { APIRoute } from 'astro';
 import { authorizeItem, type AccessDecision, type AccessDeps } from './itemAccess';
 import { resolveOriginal } from './mediaPaths';
 import { getPlaceholderResponse } from './placeholder';
-import { getMimeType } from './mime';
+import { Readable } from 'stream';
+import { getMimeType, isActiveContentType, safetyHeaders } from './mime';
+import { attachmentDisposition } from './contentDisposition';
+import { parseOriginalPath } from './originalPath';
+import { contentRangeHeader, parseRange, unsatisfiableContentRange } from './httpRange';
 import { nonThrowingLogger } from './scan';
 import { contentEtag, fileEtag, isNotModified, notModifiedResponse, validatorHeaders } from './mediaCache';
 
@@ -88,34 +92,40 @@ export function createPreviewHandler(
 }
 
 export function createOriginalHandler(
-    deps: MediaHandlerDeps & { getLibraryPath: () => string }
+    deps: MediaHandlerDeps & {
+        getLibraryPath: () => string;
+        /** File-open seam (defaults to fs.promises.open); lets tests observe handle lifecycle. */
+        openFile?: (file: string, flags: 'r') => Promise<fs.promises.FileHandle>;
+    }
 ): APIRoute {
     const log = nonThrowingLogger(deps.log ?? console);
+    const openFile = deps.openFile ?? ((file: string, flags: 'r') => fs.promises.open(file, flags));
     return async ({ params, request }) => {
         const libraryPath = deps.getLibraryPath();
         if (!libraryPath || !params.path) return getPlaceholderResponse();
 
-        // Known limitation (P3.4): the router has usually already decoded params.path,
-        // so this is a second decode; a literal "%XX" in a real filename may select the
-        // wrong same-item file. P3.4 must encode/decode exactly once.
-        // Malformed percent-encoding is 400 (request-syntax dependent, not an existence oracle).
-        let relative: string;
+        // Astro has already applied decodeURI once; the remainder (reserved escapes) is
+        // decoded here, exactly once in total (see originalPath.ts). Names that cannot
+        // travel in a path (literal "%XX") arrive in the `n` query parameter instead.
+        let nameOverride: string | null = null;
+        let download = false;
+        let recoveryOnly = false;
         try {
-            relative = decodeURIComponent(params.path);
-        } catch {
-            return new Response("Invalid path", { status: 400 });
+            const query = new URL(request.url).searchParams;
+            nameOverride = query.get('n');
+            download = query.get('download') === '1';
+            recoveryOnly = query.get('recover') === '1';
+        } catch { /* unparsable URL: path-only */ }
+
+        const parsed = parseOriginalPath(params.path, nameOverride);
+        if (!parsed.ok) {
+            return new Response(parsed.status === 400 ? "Invalid path" : "Not found", { status: parsed.status });
         }
 
-        // Exactly "<id>.info/<file>": anything else is not an item original
-        const parts = relative.split('/');
-        const dirName = parts[0];
-        if (parts.length !== 2 || !dirName.endsWith('.info')) return new Response("Not found", { status: 404 });
-        const itemId = dirName.slice(0, -'.info'.length);
-
-        const decision = await authorize(deps, request, itemId);
+        const decision = await authorize(deps, request, parsed.itemId);
         if (!decision.ok) return denied(decision);
 
-        const resolved = resolveOriginal(libraryPath, decision.item.id, decision.item.ext, parts[1]);
+        const resolved = resolveOriginal(libraryPath, decision.item.id, decision.item.ext, parsed.fileName, { recoveryOnly });
         if (resolved.kind === 'ambiguous') return new Response("Ambiguous original", { status: 409 });
         if (resolved.kind !== 'ok') return new Response("Not found", { status: 404 });
 
@@ -129,42 +139,50 @@ export function createOriginalHandler(
             // Conditional evaluation precedes Range handling (RFC 9110 13.2.2)
             if (isNotModified(request, validators)) return notModifiedResponse(validators);
 
-            const range = request.headers.get('range');
-            const rangeMatch = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null;
-            if (rangeMatch) {
-                const start = parseInt(rangeMatch[1], 10);
-                const end = rangeMatch[2] ? Math.min(parseInt(rangeMatch[2], 10), fileSize - 1) : fileSize - 1;
+            const baseHeaders: Record<string, string> = {
+                ...cacheHeaders,
+                ...safetyHeaders(contentType),
+                "Content-Type": contentType,
+                "Accept-Ranges": "bytes"
+            };
+            // Explicit downloads, and active formats always, are attachments (never an
+            // inline same-origin document). <img>/<video> embedding is unaffected.
+            if (download || isActiveContentType(contentType)) {
+                baseHeaders["Content-Disposition"] = attachmentDisposition(path.basename(resolved.path));
+            }
 
-                if (start >= fileSize || start > end) {
-                    return new Response(null, {
-                        status: 416,
-                        headers: { "Content-Range": `bytes */${fileSize}` }
-                    });
-                }
-
-                // @ts-ignore - ReadableStream/NodeStream mismatch fix
-                return new Response(fs.createReadStream(resolved.path, { start, end }), {
-                    status: 206,
-                    headers: {
-                        ...cacheHeaders,
-                        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": ((end - start) + 1).toString(),
-                        "Content-Type": contentType,
-                    }
+            // Range is only defined for GET (RFC 9110 14.2): HEAD (and anything else) gets
+            // the full-response decision. Malformed/multi-range headers also fall through to 200.
+            const decision = request.method === 'GET'
+                ? parseRange(request.headers.get('range'), fileSize)
+                : ({ kind: 'full' } as const);
+            if (decision.kind === 'unsatisfiable') {
+                return new Response(null, {
+                    status: 416,
+                    headers: { ...baseHeaders, "Content-Range": unsatisfiableContentRange(fileSize) }
                 });
             }
 
-            // No Range header, or one we can't parse (e.g. suffix ranges): serve the full file
-            const fileBuffer = await fs.promises.readFile(resolved.path);
-            return new Response(fileBuffer, {
-                headers: {
-                    ...cacheHeaders,
-                    "Content-Type": contentType,
-                    "Content-Length": fileSize.toString(),
-                    "Accept-Ranges": "bytes"
-                }
-            });
+            const range = decision.kind === 'partial' ? decision.range : null;
+            const length = range ? range.end - range.start + 1 : fileSize;
+            const headers: Record<string, string> = { ...baseHeaders, "Content-Length": length.toString() };
+            if (range) headers["Content-Range"] = contentRangeHeader(range, fileSize);
+            const status = range ? 206 : 200;
+
+            if (request.method === 'HEAD' || length === 0) return new Response(null, { status, headers });
+
+            // Open before responding so a vanished file is caught here (placeholder),
+            // and stream only the needed slice instead of buffering the file.
+            const handle = await openFile(resolved.path, 'r');
+            let body: ReadableStream;
+            try {
+                const stream = handle.createReadStream(range ? { start: range.start, end: range.end } : {});
+                body = Readable.toWeb(stream) as unknown as ReadableStream;
+            } catch (error) {
+                await handle.close().catch(() => { });
+                throw error;
+            }
+            return new Response(body, { status, headers });
         } catch (error) {
             log.error("[API] original serve error:", error);
             return getPlaceholderResponse();

@@ -2,21 +2,16 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { filtersStore, tagsGroupsStore } from '../stores/libraryStore';
 import { eagleColor } from '../lib/eagleColors';
-import { originalUrl, previewUrl, thumbnailUrl } from '../lib/mediaUrls';
+import { downloadLinkProps, openOriginalLinkProps, originalUrl, previewUrl, thumbnailUrl } from '../lib/mediaUrls';
+import { AUDIO_PLAY_EXTS, IMAGE_RENDER_EXTS, VIDEO_PLAY_EXTS } from '../lib/mime';
+import { dateAdded, formatDuration, formatTimestamp, ratingStars, MAX_RATING, type LibraryItem } from '../lib/itemTypes';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
 
-interface Item {
-    id: string;
-    name: string;
-    ext: string;
-    width: number;
-    height: number;
-    size: number;
-    modificationTime: number;
-    description?: string;
-    tags?: string[];
-}
+type Item = LibraryItem;
+
+const isPlayableExt = (ext: string) =>
+    ([...VIDEO_PLAY_EXTS, ...AUDIO_PLAY_EXTS] as readonly string[]).includes(ext.toLowerCase());
 
 interface ModalProps {
     item: Item | null;
@@ -104,16 +99,21 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
     const getOriginalUrl = (itm: Item) => originalUrl(itm.id, itm.name, itm.ext);
 
     const getFullResUrl = (itm: Item) => {
-        const supportedRenderExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg', 'bmp', 'ico'];
-        if (supportedRenderExts.includes(itm.ext.toLowerCase())) {
+        if ((IMAGE_RENDER_EXTS as readonly string[]).includes(itm.ext.toLowerCase())) {
             return getOriginalUrl(itm);
         }
         return previewUrl(itm.id);
     };
 
-    const isVideo = ['mp4', 'webm', 'mov'].includes(item.ext.toLowerCase());
-    const isAudio = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(item.ext.toLowerCase());
+    const isVideo = (VIDEO_PLAY_EXTS as readonly string[]).includes(item.ext.toLowerCase());
+    const isAudio = (AUDIO_PLAY_EXTS as readonly string[]).includes(item.ext.toLowerCase());
     const fullResUrl = isVideo || isAudio ? getOriginalUrl(item) : getFullResUrl(item);
+
+    // Read-only metadata; each helper returns null for absent/zero/invalid values
+    const duration = formatDuration(item.duration);
+    const rating = ratingStars(item.star);
+    const added = dateAdded(item);
+    const modified = formatTimestamp(item.modificationTime);
 
     const formatBytes = (bytes: number, decimals = 2) => {
         if (!+bytes) return '0 Bytes';
@@ -216,10 +216,10 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
         >
             {/* Preload Next/Prev Images */}
             <div style={{ display: 'none' }}>
-                {nextItem && !['mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(nextItem.ext.toLowerCase()) && (
+                {nextItem && !isPlayableExt(nextItem.ext) && (
                     <img src={getFullResUrl(nextItem)} alt="preload next" />
                 )}
-                {prevItem && !['mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(prevItem.ext.toLowerCase()) && (
+                {prevItem && !isPlayableExt(prevItem.ext) && (
                     <img src={getFullResUrl(prevItem)} alt="preload prev" />
                 )}
             </div>
@@ -263,6 +263,27 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </button>
+                {/* Original actions: plain links, so keyboard/arrow handling (window-level) is untouched.
+                    Download is a server attachment (streamed, Range/auth/304 intact); SVG is always
+                    served as an attachment, so "open" downloads it instead of running it on this origin. */}
+                <a
+                    {...downloadLinkProps(item.id, item.name, item.ext)}
+                    className="absolute top-4 right-28 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Download original"
+                    aria-label="Download original"
+                >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"></path></svg>
+                </a>
+                <a
+                    {...openOriginalLinkProps(item.id, item.name, item.ext)}
+                    className="absolute top-4 right-40 text-white hover:text-blue-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm pointer-events-auto"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Open original in new tab"
+                    aria-label="Open original in new tab"
+                >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                </a>
                 <button
                     ref={closeBtnRef}
                     className="absolute top-4 right-4 text-white hover:text-red-400 bg-black/40 hover:bg-black/80 w-10 h-10 rounded-full flex items-center justify-center cursor-pointer z-50 transition-colors shadow-lg backdrop-blur-sm"
@@ -442,9 +463,29 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                         <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Type</span>
                         <span className="font-medium text-[15px]">{item.ext.toUpperCase()}</span>
                     </div>
+                    {duration && (
+                        <div className="text-sm flex flex-col">
+                            <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Duration</span>
+                            <span className="font-medium text-[15px]">{duration}</span>
+                        </div>
+                    )}
+                    {rating !== null && (
+                        <div className="text-sm flex flex-col">
+                            <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Rating</span>
+                            <span className="font-medium text-[15px] text-amber-500" role="img" aria-label={`Rating: ${rating} of ${MAX_RATING}`}>
+                                {'★'.repeat(rating)}<span className="text-zinc-300 dark:text-zinc-600">{'★'.repeat(MAX_RATING - rating)}</span>
+                            </span>
+                        </div>
+                    )}
+                    {added && (
+                        <div className="text-sm flex flex-col">
+                            <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Date Added</span>
+                            <span className="font-medium text-[15px]">{added}</span>
+                        </div>
+                    )}
                     <div className="text-sm flex flex-col">
                         <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Modified</span>
-                        <span className="font-medium text-[15px]">{new Date(item.modificationTime).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="font-medium text-[15px]">{modified ?? '—'}</span>
                     </div>
                     <div className="text-sm flex flex-col pt-4 border-t border-zinc-200 dark:border-zinc-800">
                         <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Description</span>

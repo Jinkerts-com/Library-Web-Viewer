@@ -1,69 +1,49 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect } from 'react';
+import { useStore } from '@nanostores/react';
+import { isAlertNotice } from '../lib/scanClient';
+import { attachScanMonitor, dismissScanNotice, scanStateStore, startLibraryRescan } from '../stores/libraryStore';
 
-interface ScanStatus {
-    isScanning: boolean;
-    scannedCount: number;
-    totalItems?: number;
-    // Terminal fields (additive; absent on progress messages and from older servers)
-    outcome?: 'success' | 'partial' | 'failure' | null;
-    error?: string | null;
-}
-
+// Floating scan feedback. Scan state (event stream, polling fallback, outcomes)
+// lives in the shared scan client; this component only renders it, so it is
+// visible even when the sidebar is closed on mobile.
 const ScanProgress: React.FC = () => {
-    const [status, setStatus] = useState<ScanStatus | null>(null);
-    const [isVisible, setIsVisible] = useState(false);
-    const [notice, setNotice] = useState<string | null>(null);
-    const isFirstMessage = useRef(true);
+    const scan = useStore(scanStateStore);
 
-    useEffect(() => {
-        const evtSource = new EventSource('/api/status/stream');
+    useEffect(() => attachScanMonitor(), []);
 
-        evtSource.onmessage = (event) => {
-            try {
-                const data: ScanStatus = JSON.parse(event.data);
-                setStatus(data);
-                setIsVisible(data.isScanning || false);
+    const notice = scan.notice;
+    const isRunning = scan.phase === 'running';
+    const isProblem = !!notice && isAlertNotice(notice.kind);
 
-                // A scan that finished while we were watching and did not fully succeed.
-                // The first message is just the server's snapshot, not news.
-                if (data.isScanning) {
-                    setNotice(null);
-                } else if (!isFirstMessage.current && (data.outcome === 'failure' || data.outcome === 'partial')) {
-                    setNotice((data.outcome === 'failure' ? 'Library scan failed. ' : 'Library scan finished with problems. ') + (data.error || ''));
-                }
-                isFirstMessage.current = false;
-
-            } catch (e) {
-                console.error("Failed to parse SSE", e);
-            }
-        };
-
-        evtSource.onerror = (err) => {
-        };
-
-        return () => {
-            evtSource.close();
-        };
-    }, []);
-
-    if (notice && !isVisible) {
+    if (isProblem && notice && !isRunning) {
         return (
             <div role="alert" style={{
                 position: 'fixed', bottom: '20px', right: '20px', maxWidth: '360px',
                 backgroundColor: 'rgba(120, 20, 20, 0.9)', color: 'white', padding: '12px 16px',
                 borderRadius: '8px', zIndex: 9999, fontSize: '13px', display: 'flex', gap: '12px', alignItems: 'flex-start'
             }}>
-                <span>{notice}</span>
-                <button type="button" aria-label="Dismiss" onClick={() => setNotice(null)}
+                <span>
+                    {notice.kind === 'failure' ? 'Library scan failed. ' : ''}{notice.message}
+                    {notice.kind === 'failure' && (
+                        <>
+                            {' '}
+                            <button type="button" onClick={() => void startLibraryRescan()} disabled={!scan.canStart}
+                                style={{ background: 'none', border: 'none', color: 'inherit', textDecoration: 'underline', cursor: scan.canStart ? 'pointer' : 'default', opacity: scan.canStart ? 1 : 0.6, padding: 0, font: 'inherit' }}>
+                                {scan.canStart ? 'Retry' : `Retry in ${scan.cooldownSeconds}s`}
+                            </button>
+                        </>
+                    )}
+                </span>
+                <button type="button" aria-label="Dismiss" onClick={dismissScanNotice}
                     style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '16px' }}>×</button>
             </div>
         );
     }
 
-    if (!isVisible || !status) return null;
+    if (!isRunning) return null;
 
     return (
-        <div style={{
+        <div role="status" style={{
             position: 'fixed',
             bottom: '20px',
             right: '20px',
@@ -89,7 +69,7 @@ const ScanProgress: React.FC = () => {
             <div>
                 <div style={{ fontWeight: 'bold', fontSize: '14px' }}>Scanning Library...</div>
                 <div style={{ fontSize: '12px', opacity: 0.8 }}>
-                    Processed: {status.scannedCount} items
+                    Processed: {scan.scannedCount} items{scan.polling ? ' (reconnecting…)' : ''}
                 </div>
             </div>
             <style>{`

@@ -90,6 +90,31 @@ describe("contained resolution", () => {
     });
 });
 
+describe("resolveOriginal recoveryOnly", () => {
+    test("never selects a real file resembling the placeholder when several candidates exist", () => {
+        const lib = makeLibrary();
+        writeItem(lib, "a", { "original.png": "C", "actual.png": "A" });
+        expect(resolveOriginal(lib, "a", "png", "original.png", { recoveryOnly: true })).toEqual({ kind: "ambiguous" });
+        // the normal contract is untouched: exact name wins
+        expect(resolveOriginal(lib, "a", "png", "original.png").kind).toBe("ok");
+    });
+
+    test("serves the sole eligible original regardless of the requested name", () => {
+        const lib = makeLibrary();
+        const dir = writeItem(lib, "a", { "only.png": "x", "metadata.json": "{}", "only_thumbnail.png": "t" });
+        const r = resolveOriginal(lib, "a", "png", "ignored", { recoveryOnly: true });
+        expect(r.kind).toBe("ok");
+        if (r.kind === "ok") expect(fs.realpathSync(r.path)).toBe(fs.realpathSync(path.join(dir, "only.png")));
+    });
+
+    test("none -> not_found; invalid item -> not_found", () => {
+        const lib = makeLibrary();
+        writeItem(lib, "a", { "metadata.json": "{}" });
+        expect(resolveOriginal(lib, "a", "png", "x", { recoveryOnly: true })).toEqual({ kind: "not_found" });
+        expect(resolveOriginal(lib, "..", "png", "x", { recoveryOnly: true })).toEqual({ kind: "not_found" });
+    });
+});
+
 describe("resolveOriginal", () => {
     test("serves the exact requested file", () => {
         const lib = makeLibrary();

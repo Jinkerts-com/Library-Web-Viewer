@@ -1,18 +1,7 @@
 import React, { useState } from 'react';
 import { useStore } from '@nanostores/react';
-import { foldersStore, markFoldersUnlocked, type Folder } from '../stores/libraryStore';
-
-function findFolderPath(folders: Folder[], id: string, trail: Folder[] = []): Folder[] | null {
-    for (const folder of folders) {
-        const next = [...trail, folder];
-        if (folder.id === id) return next;
-        if (folder.children) {
-            const found = findFolderPath(folder.children, id, next);
-            if (found) return found;
-        }
-    }
-    return null;
-}
+import { foldersStore, markFoldersUnlocked } from '../stores/libraryStore';
+import { findProtectedFolder } from '../lib/folderPaths';
 
 export default function LockScreen({ folderId }: { folderId: string }) {
     const folders = useStore(foldersStore);
@@ -22,8 +11,7 @@ export default function LockScreen({ folderId }: { folderId: string }) {
 
     // The password lives on the nearest self-or-ancestor folder that has one;
     // locks cascade down from it
-    const path = findFolderPath(folders, folderId) || [];
-    const protectedFolder = [...path].reverse().find(f => f.hasPassword);
+    const protectedFolder = findProtectedFolder(folders, folderId) ?? undefined;
     const hint = protectedFolder?.passwordTips;
 
     const submit = async () => {

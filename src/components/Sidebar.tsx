@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useStore } from '@nanostores/react';
 import { eagleColor } from '../lib/eagleColors';
 import { sortFoldersByName } from '../lib/folderPresentation';
+import { isAlertNotice } from '../lib/scanClient';
 import {
     foldersStore,
     lockedFoldersStore,
@@ -17,6 +18,9 @@ import {
     toggleTheme,
     toggleRecursive,
     fetchMetadata,
+    scanStateStore,
+    attachScanMonitor,
+    startLibraryRescan,
 } from '../stores/libraryStore';
 
 // Icons
@@ -124,6 +128,56 @@ const FolderItem = ({ folder, depth = 0 }: { folder: Folder, depth?: number }) =
     );
 };
 
+const RescanIcon = ({ spinning }: { spinning: boolean }) => (
+    <svg className={`w-5 h-5 ${spinning ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M5.6 15A8 8 0 0018.4 9M18.4 9L20 9M5.6 15L4 15" />
+    </svg>
+);
+
+// Rescan control + inline outcome. Disabled while a request/scan/cooldown is
+// active; the aria-live line below carries the outcome for screen readers.
+const RescanControl = () => {
+    const scan = useStore(scanStateStore);
+    React.useEffect(() => attachScanMonitor(), []);
+
+    const busy = scan.phase === 'requesting' || scan.phase === 'running';
+    const label = scan.phase === 'requesting' ? 'Starting scan…'
+        : scan.phase === 'running' ? 'Scanning…'
+        : scan.phase === 'cooldown' ? `Rescan available in ${scan.cooldownSeconds}s`
+        : scan.notice?.kind === 'failure' || scan.notice?.kind === 'network' || scan.notice?.kind === 'error' ? 'Retry rescan'
+        : 'Rescan Library';
+
+    const notice = scan.notice;
+    const noticeText = !notice ? ''
+        : notice.kind === 'rate_limited' ? `Too many rescan requests. Try again in ${scan.cooldownSeconds}s.`
+        : notice.kind === 'failure' ? `Scan failed. ${notice.message}`
+        : notice.message;
+    const ownedByAlert = !!notice && isAlertNotice(notice.kind) && scan.phase !== 'running';
+    const noticeColor = !notice ? ''
+        : notice.kind === 'success' ? 'text-green-700 dark:text-green-400'
+        : notice.kind === 'busy' ? 'text-zinc-600 dark:text-zinc-400'
+        : 'text-amber-700 dark:text-amber-400';
+
+    return (
+        <div className="flex flex-col gap-1">
+            <button
+                type="button"
+                onClick={() => void startLibraryRescan()}
+                disabled={!scan.canStart}
+                aria-label={label}
+                className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+                <RescanIcon spinning={busy} />
+                <span>{label}</span>
+            </button>
+            {/* Single announcement owner per notice: problem outcomes are announced by the
+                global alert in ScanProgress, so their sidebar text is visual only. */}
+            <div role="status" aria-live="polite" className={`text-xs ${noticeColor}`}>{ownedByAlert ? '' : noticeText}</div>
+            {ownedByAlert && <div className={`text-xs ${noticeColor}`}>{noticeText}</div>}
+        </div>
+    );
+};
+
 export default function Sidebar() {
     const folders = useStore(foldersStore);
     const filters = useStore(filtersStore);
@@ -220,6 +274,8 @@ export default function Sidebar() {
 
                 {/* Footer / Theme Toggle */}
                 <div className="p-4 border-t border-zinc-200 dark:border-zinc-800 flex flex-col gap-3 bg-zinc-50 dark:bg-zinc-900/50">
+                    <RescanControl />
+
                     {/* Recursive Toggle */}
                     <div className="flex items-center gap-2 cursor-pointer" onClick={() => toggleRecursive()}>
                         <div className={`w-4 h-4 border rounded flex items-center justify-center ${filters.recursive ? 'bg-blue-600 border-blue-600' : 'border-zinc-400 bg-white dark:bg-zinc-800'}`}>

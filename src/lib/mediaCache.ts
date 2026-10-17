@@ -22,9 +22,15 @@ export function contentEtag(data: Uint8Array): string {
     return `"${crypto.createHash('sha1').update(data).digest('hex')}"`;
 }
 
-/** Weak validator for files served straight from the library (size + mtime). */
+/**
+ * Strong validator for files served straight from the library (size + mtime).
+ * Strong (no `W/`) because 206 responses must not carry a weak validator
+ * (RFC 9110 15.3.7). This is safe here: the library is read-only to this app and
+ * an original's bytes are identified by (size, mtime) - any change produces a
+ * new size or mtime and therefore a new tag.
+ */
 export function fileEtag(size: number, mtimeMs: number): string {
-    return `W/"${size.toString(16)}-${Math.floor(mtimeMs).toString(16)}"`;
+    return `"${size.toString(16)}-${Math.floor(mtimeMs).toString(16)}"`;
 }
 
 export interface Validators {
@@ -43,7 +49,12 @@ export function validatorHeaders(v: Validators): Record<string, string> {
 
 const stripWeak = (tag: string) => tag.trim().replace(/^W\//, '');
 
-/** RFC 9110 conditional GET: If-None-Match wins; If-Modified-Since is consulted only without it. */
+/**
+ * RFC 9110 conditional GET: If-None-Match wins; If-Modified-Since is consulted only without it.
+ * If-None-Match uses WEAK comparison (13.1.2), so `W/` is stripped on both sides: a strong
+ * tag still matches its weak echo. (Strong comparison would only be needed for If-Range /
+ * If-Match, which are not implemented.)
+ */
 export function isNotModified(request: Request, v: Validators): boolean {
     if (request.method !== 'GET' && request.method !== 'HEAD') return false;
 

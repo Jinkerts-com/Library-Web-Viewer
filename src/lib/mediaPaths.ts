@@ -54,6 +54,22 @@ export function resolveItemDir(libraryPath: string, itemId: string): string | nu
 }
 
 /**
+ * `fs.realpathSync`, with a fallback for Bun on Linux, whose realpath fails (ENOENT) on an
+ * existing entry whose name contains a backslash (a legal filename character there).
+ * The fallback only applies to a non-symlink entry, whose real path is then its real
+ * directory plus its own name; a symlink that can't be resolved stays an error.
+ */
+function realpathLeaf(file: string): string {
+    try {
+        return fs.realpathSync(file);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !file.includes('\\')) throw error;
+        if (fs.lstatSync(file).isSymbolicLink()) throw error;
+        return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+    }
+}
+
+/**
  * Real path of `file` when it is an existing regular file whose realpath stays
  * inside the realpath of `root` (rejects symlink/junction escapes). Null for
  * anything else, including missing files and any filesystem error.
@@ -61,7 +77,7 @@ export function resolveItemDir(libraryPath: string, itemId: string): string | nu
 export function realFileInside(root: string, file: string): string | null {
     try {
         const realRoot = fs.realpathSync(root);
-        const realFile = fs.realpathSync(file);
+        const realFile = realpathLeaf(file);
         if (!isInside(realRoot, realFile)) return null;
         return fs.statSync(realFile).isFile() ? realFile : null;
     } catch {
@@ -104,6 +120,10 @@ function extMatches(fileName: string, ext: string): boolean {
  *  2. otherwise case-insensitive matches: exactly one is served, several -> ambiguous;
  *  3. otherwise (stale name) the sole candidate is served;
  *  4. several candidates -> ambiguous, none -> not_found (never an arbitrary pick).
+ * `opts.recoveryOnly` (explicit client signal for names that cannot be a directory
+ * entry, see `originalUrl`) skips steps 1-2 entirely: `requestedName` is ignored, so a
+ * real file that merely resembles the placeholder is never preferred. Only the
+ * sole eligible original is served; several -> ambiguous, none -> not_found.
  * Limitation: `*_thumbnail.<ext>` exclusion is this batch's convention, not
  * proven Eagle naming behavior. A requested name that is itself an ineligible
  * entry (e.g. an escaping symlink) falls through to step 3 like any stale name.
@@ -112,11 +132,15 @@ export function resolveOriginal(
     libraryPath: string,
     itemId: string,
     ext: string,
-    requestedName: string
+    requestedName: string,
+    opts: { recoveryOnly?: boolean } = {}
 ): OriginalResolution {
+    const recoveryOnly = opts.recoveryOnly === true;
     const itemDir = resolveItemDir(libraryPath, itemId);
-    if (!itemDir || !ext || !isSafeFileName(requestedName)) return { kind: 'not_found' };
-    if (isAuxiliaryItemFile(requestedName)) return { kind: 'not_found' };
+    if (!itemDir || !ext) return { kind: 'not_found' };
+    if (!recoveryOnly && (!isSafeFileName(requestedName) || isAuxiliaryItemFile(requestedName))) {
+        return { kind: 'not_found' };
+    }
 
     let entries: string[];
     try {
@@ -143,15 +167,17 @@ export function resolveOriginal(
     }
 
     // Matching is against real directory entries (not a joined path) so case/8.3 tricks can't pick another name
-    // 1. valid exact match
-    const exact = eligible.find(c => c.name === requestedName);
-    if (exact) return { kind: 'ok', path: exact.real };
+    if (!recoveryOnly) {
+        // 1. valid exact match
+        const exact = eligible.find(c => c.name === requestedName);
+        if (exact) return { kind: 'ok', path: exact.real };
 
-    // 2./3. case-insensitive matches: serve only a unique one (case-sensitive filesystems can hold several)
-    const lower = requestedName.toLowerCase();
-    const caseMatches = eligible.filter(c => c.name.toLowerCase() === lower);
-    if (caseMatches.length === 1) return { kind: 'ok', path: caseMatches[0].real };
-    if (caseMatches.length > 1) return { kind: 'ambiguous' };
+        // 2./3. case-insensitive matches: serve only a unique one (case-sensitive filesystems can hold several)
+        const lower = requestedName.toLowerCase();
+        const caseMatches = eligible.filter(c => c.name.toLowerCase() === lower);
+        if (caseMatches.length === 1) return { kind: 'ok', path: caseMatches[0].real };
+        if (caseMatches.length > 1) return { kind: 'ambiguous' };
+    }
 
     // 4. stale-name recovery: the item's sole eligible original
     if (eligible.length === 1) return { kind: 'ok', path: eligible[0].real };

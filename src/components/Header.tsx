@@ -20,11 +20,14 @@ import {
     type SortBy,
     tagsGroupsStore,
     toggleTagExclude,
-    addRecentColor
+    addRecentColor,
+    foldersStore,
+    setFolderId
 } from '../stores/libraryStore';
 
 import LibraryColorPicker from './LibraryColorPicker';
 import { eagleColor } from '../lib/eagleColors';
+import { buildBreadcrumbs } from '../lib/folderPaths';
 
 // Icons
 const TagIcon = () => <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 5.5h-4.5L9 11l7.5 7.5L22 13l-3-7.5zm-3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM6.5 6h-3A1.5 1.5 0 0 0 2 7.5v8A1.5 1.5 0 0 0 3.5 17h3A1.5 1.5 0 0 0 8 15.5v-8A1.5 1.5 0 0 0 6.5 6z" /></svg>; // Standard Tag
@@ -46,6 +49,8 @@ export default function Header() {
     const tagsGroups = useStore(tagsGroupsStore);
     const zoom = useStore(zoomLevelStore);
     const theme = useStore(themeStore);
+    const folders = useStore(foldersStore);
+    const crumbs = buildBreadcrumbs(folders, filters);
 
     const [isTagPopoverOpen, setIsTagPopoverOpen] = useState(false);
     const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
@@ -76,7 +81,7 @@ export default function Header() {
 
     return (
         <header className="w-full h-16 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700 flex items-center px-4 gap-4 box-border z-20 sticky top-0 justify-between">
-            {/* Left: Breadcrumbs / Title (Placeholder for now) */}
+            {/* Left: Breadcrumbs */}
             <div className="flex items-center gap-2">
                 <button
                     className="md:hidden p-2 -ml-2 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md"
@@ -86,9 +91,28 @@ export default function Header() {
                 >
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                 </button>
-                <span className="hidden md:block text-xl font-bold text-zinc-800 dark:text-zinc-100 truncate">
-                    {filters.specialFilter === 'trash' ? 'Trash' : filters.folderId ? 'Folder View' : 'All Media'}
-                </span>
+                <nav aria-label="Breadcrumb" className="hidden md:block min-w-0">
+                    <ol className="flex items-center gap-1 text-xl font-bold text-zinc-800 dark:text-zinc-100 min-w-0">
+                        {crumbs.map((crumb, i) => (
+                            <li key={crumb.key} className="flex items-center gap-1 min-w-0">
+                                {i > 0 && <span className="text-zinc-400 font-normal" aria-hidden="true">/</span>}
+                                {crumb.navigable ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => setFolderId(crumb.folderId)}
+                                        className="truncate max-w-[10rem] rounded px-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                    >
+                                        {crumb.label}
+                                    </button>
+                                ) : (
+                                    <span className="truncate max-w-[16rem] px-1" aria-current={crumb.current ? 'page' : undefined}>
+                                        {crumb.label}
+                                    </span>
+                                )}
+                            </li>
+                        ))}
+                    </ol>
+                </nav>
             </div>
 
             {/* Center: Search & Filters */}

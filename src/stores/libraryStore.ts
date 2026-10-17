@@ -1,4 +1,5 @@
 import { atom, map } from 'nanostores';
+import { ScanClient, type ScanUiState } from '../lib/scanClient';
 
 export interface Folder {
     id: string;
@@ -48,6 +49,10 @@ export const unlockedFoldersStore = atom<Set<string>>(new Set()); // Session unl
 // Server lock metadata readiness (/api/meta `ready`); null = not reported yet.
 // The grid refreshes when this changes, since /api/items answers 503 until ready.
 export const libraryReadyStore = atom<boolean | null>(null);
+// Bumped when server data changed under the current view (e.g. a rescan finished);
+// the grid reloads page 1 through its controller without touching filters.
+export const gridRevisionStore = atom<number>(0);
+export const bumpGridRevision = () => gridRevisionStore.set(gridRevisionStore.get() + 1);
 export const layoutStore = atom<LayoutMode>('masonry');
 export const sidebarOpenStore = atom<boolean>(false);
 export const themeStore = atom<'light' | 'dark'>('light');
@@ -110,6 +115,40 @@ export async function fetchMetadata() {
         console.error('Failed to fetch metadata:', err);
     }
 }
+
+// Rescan: one shared client (event stream + status polling + cooldown) for every
+// component that shows or triggers scans.
+export const scanStateStore = atom<ScanUiState>({
+    phase: 'idle', scannedCount: 0, totalItems: null, notice: null,
+    cooldownSeconds: 0, polling: false, canStart: true,
+});
+
+let scanClient: ScanClient | null = null;
+function getScanClient(): ScanClient {
+    if (!scanClient) {
+        scanClient = new ScanClient({
+            fetchFn: (url, init) => fetch(url, init),
+            createEventSource: url => (typeof EventSource === 'undefined' ? null : new EventSource(url)),
+            schedule: (fn, ms) => {
+                const id = setTimeout(fn, ms);
+                return () => clearTimeout(id);
+            },
+            now: () => Date.now(),
+            // Metadata first so lock state is fresh before the grid reloads.
+            onScanComplete: async () => {
+                await fetchMetadata();
+                bumpGridRevision();
+            },
+            onChange: state => scanStateStore.set(state),
+        });
+    }
+    return scanClient;
+}
+
+/** Mount-time subscription; returns the detach function (closes stream/polling when last). */
+export const attachScanMonitor = (): (() => void) => getScanClient().attach();
+export const startLibraryRescan = (): Promise<void> => getScanClient().start();
+export const dismissScanNotice = (): void => getScanClient().dismissNotice();
 
 export function setSearch(search: string) {
     filtersStore.setKey('search', search);

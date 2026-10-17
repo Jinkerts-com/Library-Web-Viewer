@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Masonry from 'react-masonry-css';
 import Modal from './Modal';
 import { useStore } from '@nanostores/react';
-import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore, libraryReadyStore, fetchMetadata } from '../stores/libraryStore';
+import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore, libraryReadyStore, gridRevisionStore, fetchMetadata } from '../stores/libraryStore';
 import { GridRequestController, resolveSelection } from '../lib/gridRequests';
 import type { GridState } from '../lib/gridRequests';
 import LockScreen from './LockScreen';
 import { thumbnailUrl } from '../lib/mediaUrls';
+import type { LibraryItem } from '../lib/itemTypes';
 
 // Client-side fallback when the thumbnail request itself fails; must differ
 // from the original URL so onError can't re-request the same failing endpoint.
@@ -14,17 +15,7 @@ const FALLBACK_THUMB = 'data:image/svg+xml,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect width="100%" height="100%" fill="#e4e4e7"/><circle cx="80" cy="75" r="12" fill="#a1a1aa"/><path d="M55 135l30-35 25 28 15-15 25 22H55z" fill="#a1a1aa"/></svg>'
 );
 
-interface Item {
-    id: string;
-    name: string;
-    ext: string;
-    width: number;
-    height: number;
-    size: number;
-    modificationTime: number;
-    description?: string;
-    tags?: string[];
-}
+type Item = LibraryItem;
 
 const INITIAL_GRID_STATE: GridState<Item> = {
     items: [], loading: false, error: null, hasMore: true, page: 1, totalItems: null, generation: 0, enabled: true,
@@ -99,6 +90,16 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
             if (controllerRef.current === controller) controllerRef.current = null;
         };
     }, [filters, unlockedFolders, libraryReady, isLockedView]);
+
+    // A finished rescan bumps the revision: reload page 1 on the live controller
+    // (new generation, in-flight work aborted) with the filters unchanged.
+    const gridRevision = useStore(gridRevisionStore);
+    const seenRevisionRef = useRef(gridRevision);
+    useEffect(() => {
+        if (seenRevisionRef.current === gridRevision) return;
+        seenRevisionRef.current = gridRevision;
+        controllerRef.current?.reload();
+    }, [gridRevision]);
 
     const handleRetry = () => {
         controllerRef.current?.retry();
