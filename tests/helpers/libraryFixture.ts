@@ -144,7 +144,7 @@ export function createLibraryFixture(): LibraryFixture {
                     fixture.cache.delete(id);
                 },
                 onProgress: (p) => fixture.progress.push(p),
-                onLibraryMetadata: (m) => fixture.libraryMetadata.push(m),
+                onLibraryMetadata: (m) => { fixture.libraryMetadata.push(m); },
                 onIndexChanged: () => { fixture.indexChanged.count++; },
                 ...overrides
             });

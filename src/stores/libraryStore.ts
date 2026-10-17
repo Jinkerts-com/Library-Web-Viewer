@@ -45,6 +45,9 @@ export const relevantTagCountsStore = atom<Record<string, number> | null>(null);
 export const tagsGroupsStore = atom<TagGroup[]>([]);
 export const lockedFoldersStore = atom<Set<string>>(new Set());
 export const unlockedFoldersStore = atom<Set<string>>(new Set()); // Session unlocks (matches server cookie)
+// Server lock metadata readiness (/api/meta `ready`); null = not reported yet.
+// The grid refreshes when this changes, since /api/items answers 503 until ready.
+export const libraryReadyStore = atom<boolean | null>(null);
 export const layoutStore = atom<LayoutMode>('masonry');
 export const sidebarOpenStore = atom<boolean>(false);
 export const themeStore = atom<'light' | 'dark'>('light');
@@ -88,6 +91,9 @@ export async function fetchMetadata() {
     try {
         const res = await fetch('/api/meta');
         const data = await res.json();
+        if (typeof data.ready === 'boolean' && data.ready !== libraryReadyStore.get()) {
+            libraryReadyStore.set(data.ready);
+        }
         foldersStore.set(data.folders || []);
         tagsStore.set(data.tags || []);
         tagCountsStore.set(data.tagCounts || {});

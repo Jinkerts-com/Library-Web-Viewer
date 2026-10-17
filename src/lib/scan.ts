@@ -55,8 +55,8 @@ export interface IndexerDeps {
     /** Drops generated thumbnails/previews for an item. */
     invalidateCache: (id: string) => void;
     onProgress?: (progress: ScanProgress) => void;
-    /** Receives the parsed library-level metadata.json (folders, tag groups). */
-    onLibraryMetadata?: (metadata: any) => void;
+    /** Receives the parsed library-level metadata.json (folders, tag groups). Return false when it was rejected. */
+    onLibraryMetadata?: (metadata: any) => boolean | void;
     /** Called after the index changed (end of a scan, after a watcher mutation). */
     onIndexChanged?: () => void;
     fs?: Partial<ScanFs>;
@@ -144,6 +144,25 @@ ON CONFLICT(id) DO UPDATE SET
 
 type PendingMutation = 'upsert' | 'remove';
 
+/** A watcher event deferred by a running scan, plus everyone awaiting its eventual outcome. */
+interface QueuedMutation {
+    kind: PendingMutation;
+    waiters: Array<(outcome: MutationOutcome) => void>;
+}
+
+/**
+ * Result of a watcher-originated mutation. `unreadable` means the file could not
+ * be read/parsed right now (typically a write in progress): the indexed row is
+ * untouched and flagged for the next scan, and the caller may retry soon.
+ * While a scan owns the indexer the event is queued and the returned promise stays
+ * pending until the replay after the scan, then resolves with the REAL outcome, so
+ * callers retry replay failures exactly like direct ones.
+ */
+export type MutationOutcome = 'applied' | 'unreadable' | 'failed';
+
+/** Result of re-reading the library-level metadata.json (resolved after the replay if a scan was running). */
+export type LibraryRefreshOutcome = 'applied' | 'missing' | 'unreadable' | 'rejected';
+
 export class LibraryIndexer {
     private readonly fsOps: ScanFs;
     private readonly log: Logger;
@@ -152,9 +171,13 @@ export class LibraryIndexer {
     private scanning = false;
     private scanned = 0;
     /** Watcher events that arrived during a scan, replayed (last event per id wins) once it finishes. */
-    private pending = new Map<string, PendingMutation>();
+    private pending = new Map<string, QueuedMutation>();
     /** Serializes watcher-originated mutations so they never overlap each other or a scan. */
     private chain: Promise<void> = Promise.resolve();
+    /** Library metadata changed during a scan: re-read it once the scan finishes. */
+    private rootPending = false;
+    /** Callers awaiting the outcome of the deferred library metadata reload. */
+    private rootWaiters: Array<(outcome: LibraryRefreshOutcome) => void> = [];
 
     constructor(private readonly deps: IndexerDeps) {
         this.fsOps = { ...defaultFs, ...deps.fs };
@@ -422,23 +445,69 @@ export class LibraryIndexer {
     }
 
     /** Watcher entry point: a metadata.json for `id` was added/changed. */
-    itemChanged(id: string): Promise<void> {
+    itemChanged(id: string): Promise<MutationOutcome> {
         return this.submit(id, 'upsert');
     }
 
     /** Watcher entry point: the `.info` directory for `id` was removed. */
-    itemRemoved(id: string): Promise<void> {
+    itemRemoved(id: string): Promise<MutationOutcome> {
         return this.submit(id, 'remove');
     }
 
-    private submit(id: string, kind: PendingMutation): Promise<void> {
+    /**
+     * Watcher entry point: the library-level metadata.json changed. Re-reads and
+     * republishes it (folders/passwords/tag groups) without a rescan. Unreadable or
+     * rejected content keeps the previous snapshot; the caller may retry.
+     */
+    refreshLibraryMetadata(): Promise<LibraryRefreshOutcome> {
         if (this.scanning) {
-            this.pending.set(id, kind);
-            return Promise.resolve();
+            this.rootPending = true;
+            return new Promise<LibraryRefreshOutcome>(resolve => { this.rootWaiters.push(resolve); });
+        }
+        const run = this.chain.then(() => this.applyLibraryMetadata());
+        this.chain = run.then(() => { }, () => { });
+        return run;
+    }
+
+    private submit(id: string, kind: PendingMutation): Promise<MutationOutcome> {
+        if (this.scanning) {
+            return new Promise<MutationOutcome>(resolve => {
+                const queued = this.pending.get(id);
+                if (queued) {
+                    queued.kind = kind; // last event wins; every caller shares the outcome
+                    queued.waiters.push(resolve);
+                } else {
+                    this.pending.set(id, { kind, waiters: [resolve] });
+                }
+            });
         }
         const run = this.chain.then(() => this.applyMutation(id, kind));
-        this.chain = run.catch(() => { });
+        this.chain = run.then(() => { }, () => { });
         return run;
+    }
+
+    private async applyLibraryMetadata(): Promise<LibraryRefreshOutcome> {
+        const mainMetadataPath = path.join(this.deps.libraryPath, "metadata.json");
+        if (!this.fsOps.exists(mainMetadataPath)) return 'missing';
+        let metadata: any;
+        try {
+            metadata = JSON.parse(await this.fsOps.readFile(mainMetadataPath));
+            if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+                throw new Error("Library metadata.json is not a JSON object");
+            }
+        } catch (error) {
+            this.log.error("[WATCHER] Library metadata.json is unreadable or malformed; keeping the previous lock state.", error);
+            return 'unreadable';
+        }
+        try {
+            if (this.deps.onLibraryMetadata?.(metadata) === false) return 'rejected';
+            this.deps.onIndexChanged?.();
+        } catch (error) {
+            this.log.error("[WATCHER] Library metadata hook failed:", error);
+            return 'rejected';
+        }
+        this.log.info("[WATCHER] Library metadata reloaded.");
+        return 'applied';
     }
 
     /**
@@ -450,23 +519,37 @@ export class LibraryIndexer {
      */
     private async drainAndRelease() {
         for (; ;) {
-            if (!this.pending.size) {
+            if (!this.pending.size && !this.rootPending) {
                 this.scanning = false;
                 return;
             }
+            if (this.rootPending) {
+                this.rootPending = false;
+                const waiters = this.rootWaiters;
+                this.rootWaiters = [];
+                let outcome: LibraryRefreshOutcome = 'unreadable';
+                try {
+                    outcome = await this.applyLibraryMetadata();
+                } catch (error) {
+                    this.log.error("Failed replaying queued library metadata event:", error);
+                }
+                for (const resolve of waiters) resolve(outcome);
+            }
             const batch = [...this.pending];
             this.pending.clear();
-            for (const [id, kind] of batch) {
+            for (const [id, { kind, waiters }] of batch) {
+                let outcome: MutationOutcome = 'failed';
                 try {
-                    await this.applyMutation(id, kind);
+                    outcome = await this.applyMutation(id, kind);
                 } catch (error) {
                     this.log.error("Failed replaying queued watcher event:", id, error);
                 }
+                for (const resolve of waiters) resolve(outcome);
             }
         }
     }
 
-    private async applyMutation(id: string, kind: PendingMutation) {
+    private async applyMutation(id: string, kind: PendingMutation): Promise<MutationOutcome> {
         try {
             if (kind === 'remove') {
                 this.deleteItem(id);
@@ -479,7 +562,7 @@ export class LibraryIndexer {
                     // Unreadable now: keep whatever is indexed and force the next scan to retry
                     this.log.error(`[WATCHER ERROR] Failed to read metadata for ${id}; existing row left unchanged`, e);
                     this.markForRetry(id);
-                    return;
+                    return 'unreadable';
                 }
                 item.id = id;
                 this.deps.invalidateCache(id);
@@ -488,8 +571,10 @@ export class LibraryIndexer {
             }
             // During a scan the end-of-scan hook covers this
             if (!this.scanning) this.deps.onIndexChanged?.();
+            return 'applied';
         } catch (e) {
             this.log.error(`[WATCHER ERROR] Failed to apply ${kind} for item ${id}`, e);
+            return 'failed';
         }
     }
 }

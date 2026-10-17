@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useStore } from '@nanostores/react';
 import { eagleColor } from '../lib/eagleColors';
+import { sortFoldersByName } from '../lib/folderPresentation';
 import {
     foldersStore,
     lockedFoldersStore,
@@ -114,7 +115,7 @@ const FolderItem = ({ folder, depth = 0 }: { folder: Folder, depth?: number }) =
             </div>
             {hasChildren && expanded && (
                 <div>
-                    {folder.children.sort((a, b) => a.name.localeCompare(b.name)).map(child => (
+                    {sortFoldersByName(folder.children).map(child => (
                         <FolderItem key={child.id} folder={child} depth={depth + 1} />
                     ))}
                 </div>
@@ -210,7 +211,7 @@ export default function Sidebar() {
                             Folders
                         </div>
                         <div className="space-y-0.5">
-                            {folders.sort((a, b) => a.name.localeCompare(b.name)).map(folder => (
+                            {sortFoldersByName(folders).map(folder => (
                                 <FolderItem key={folder.id} folder={folder} />
                             ))}
                         </div>

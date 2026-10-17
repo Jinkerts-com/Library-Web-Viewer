@@ -7,7 +7,8 @@ import { EventEmitter } from 'events';
 import { deleteItemCache, shutdownExiftool } from './thumbnailUtils';
 import { ensureSchema } from './schema';
 import { publishLockSnapshot } from './lockSnapshot';
-import { LibraryIndexer, itemIdFromDirName, type Logger } from './scan';
+import { LibraryIndexer, type Logger } from './scan';
+import { createWatcherRouter } from './watcherEvents';
 import { createScanService, runCleanupSteps, safeEmit } from './scanLifecycle';
 
 export const scanEmitter = new EventEmitter();
@@ -140,9 +141,10 @@ const indexer = new LibraryIndexer({
         const result = publishLockSnapshot(folderCache, mainMetadata);
         if (!result.ok) {
             reportError(`[SCAN] Library metadata.json folder structure is invalid (${result.reason}); keeping the previous lock state${folderCache.lastUpdated > 0 ? '' : ' (library stays not ready)'}.`);
-            return;
+            return false;
         }
         verboseLog("Loaded global metadata.json. Folders count:", folderCache.folders.length, "Tag Groups:", folderCache.tagsGroups.length);
+        return true;
     },
     onIndexChanged: updateTagCache
 });
@@ -173,6 +175,7 @@ export async function closeResources(): Promise<void> {
     closed = true;
     await runCleanupSteps([
         ["watcher", async () => {
+            watcherRouter.dispose();
             const w = watcher;
             watcher = undefined;
             global.libraryWatcher = undefined;
@@ -224,7 +227,8 @@ export function initWatcher() {
     console.log("Initializing Real-time Watcher on:", imagesDir);
     verboseLog("Watcher options: persistent=true, interval=2000");
 
-    watcher = chokidar.watch(imagesDir, {
+    // Root metadata.json carries folder passwords/tag groups; images/ carries items and their originals
+    watcher = chokidar.watch([imagesDir, path.join(libraryPath, "metadata.json")], {
         ignored: /(^|[\/\\])\../,
         persistent: true,
         ignoreInitial: true,
@@ -234,30 +238,21 @@ export function initWatcher() {
     });
 
     watcher
-        .on('add', handleFileChange)
-        .on('change', handleFileChange)
-        .on('unlinkDir', handleDirUnlink)
+        .on('add', (p) => watcherRouter.onFileEvent(p, 'add'))
+        .on('change', (p) => watcherRouter.onFileEvent(p, 'change'))
+        .on('unlink', (p) => watcherRouter.onFileEvent(p, 'unlink'))
+        .on('unlinkDir', (p) => watcherRouter.onDirRemoved(p))
         .on('error', (error: any) => reportError(`[WATCHER ERROR] ${error}`));
 }
 
-async function handleFileChange(filePath: string) {
-    if (path.basename(filePath) !== 'metadata.json') return;
-
-    const dirs = filePath.split(path.sep);
-    const parentDir = dirs[dirs.length - 2];
-
-    const id = itemIdFromDirName(parentDir);
-    if (!id) return;
-
-    await indexer.itemChanged(id);
-}
-
-async function handleDirUnlink(dirPath: string) {
-    const id = itemIdFromDirName(path.basename(dirPath));
-    if (!id) return;
-
-    await indexer.itemRemoved(id);
-}
+// Debounces events, retries partially written metadata, reloads lock state on root metadata
+// changes and invalidates generated media when originals change (see watcherEvents.ts).
+const watcherRouter = createWatcherRouter({
+    libraryPath,
+    indexer,
+    invalidateCache: deleteItemCache,
+    logger: indexerLogger
+});
 
 if (!global.libraryWatcher) {
     initWatcher();

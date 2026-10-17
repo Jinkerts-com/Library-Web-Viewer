@@ -5,10 +5,18 @@ import sharp from 'sharp';
 import { exiftool } from 'exiftool-vendored';
 import { libraryPath } from './db';
 import { isSafeItemId, resolveCacheFile, resolveItemDir, realFileInside, isAuxiliaryItemFile, isLibraryThumbnailFile } from './mediaPaths';
+import { MediaGenerationCoordinator, resolveThumbnailSettings } from './mediaCache';
 
 export const CACHE_DIR = path.join(process.cwd(), 'db', 'cache', 'thumbnails');
 export const PREVIEW_CACHE_DIR = path.join(process.cwd(), 'db', 'cache', 'previews');
-const previewJobs = new Map<string, Promise<Buffer | null>>();
+
+/** Coalesces misses per item, bounds aggregate thumbnail+preview generation, and fences stale writes (see mediaCache.ts). */
+const coordinator = new MediaGenerationCoordinator(4);
+
+/** Validated once at module load; sharp never sees NaN or an out-of-range value. */
+export const thumbnailSettings = resolveThumbnailSettings(process.env, (message) => {
+    try { console.warn(`[THUMBNAILS] ${message}`); } catch { }
+});
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -27,7 +35,20 @@ export async function shutdownExiftool(): Promise<void> {
     await exiftool.end();
 }
 
+/** Last-modified time (epoch ms) of an item's cached thumbnail/preview, or null when not cached. */
+export function cachedMediaMtime(kind: 'thumbnail' | 'preview', itemId: string): number | null {
+    const file = resolveCacheFile(kind === 'thumbnail' ? CACHE_DIR : PREVIEW_CACHE_DIR, itemId);
+    if (!file) return null;
+    try {
+        return fs.statSync(file).mtimeMs;
+    } catch {
+        return null;
+    }
+}
+
 export function deleteItemCache(itemId: string) {
+    // Fence first: any in-flight generation for this item must not publish its result
+    coordinator.invalidate(itemId);
     // Validated here, independently of any caller: an unsafe id never reaches unlink
     const thumbPath = resolveCacheFile(CACHE_DIR, itemId);
     const previewPath = resolveCacheFile(PREVIEW_CACHE_DIR, itemId);
@@ -72,48 +93,39 @@ export async function generateThumbnail(itemId: string): Promise<Buffer | null> 
     const itemFolder = resolveItemDir(libraryPath, itemId);
     if (!itemFolder || !fs.existsSync(itemFolder)) return null;
 
-    try {
-        const files = (await fs.promises.readdir(itemFolder)).sort();
-        let sourceFile = files.find(f => isLibraryThumbnailFile(f));
+    return coordinator.generate('thumbnail', itemId, cacheFilePath, async () => {
+        try {
+            const files = (await fs.promises.readdir(itemFolder)).sort();
+            let sourceFile = files.find(f => isLibraryThumbnailFile(f));
 
-        if (!sourceFile) {
-            const supportedExts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.gif', '.avif'];
-            sourceFile = files.find(f => {
-                const ext = path.extname(f).toLowerCase();
-                return supportedExts.includes(ext) && f !== 'metadata.json';
-            });
+            if (!sourceFile) {
+                const supportedExts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.gif', '.avif'];
+                sourceFile = files.find(f => {
+                    const ext = path.extname(f).toLowerCase();
+                    return supportedExts.includes(ext) && f !== 'metadata.json';
+                });
+            }
+
+            if (!sourceFile) return null;
+
+            const filePath = safeSourcePath(imagesPath, itemFolder, sourceFile);
+            if (!filePath) return null;
+
+            return await sharp(filePath)
+                .rotate()
+                .resize({ height: thumbnailSettings.height })
+                .webp({ quality: thumbnailSettings.quality })
+                .toBuffer();
+        } catch (error) {
+            reportError(`Error processing thumbnail for ${itemId}:`, error);
+            return null;
         }
-
-        if (!sourceFile) return null;
-
-        const filePath = safeSourcePath(imagesPath, itemFolder, sourceFile);
-        if (!filePath) return null;
-
-        const optimizedBuffer = await sharp(filePath)
-            .rotate()
-            .resize({ height: parseInt(process.env.THUMBNAIL_HEIGHT || '400', 10) })
-            .webp({ quality: parseInt(process.env.THUMBNAIL_QUALITY || '80', 10) })
-            .toBuffer();
-
-        await fs.promises.writeFile(cacheFilePath, optimizedBuffer);
-
-        return optimizedBuffer;
-    } catch (error) {
-        reportError(`Error processing thumbnail for ${itemId}:`, error);
-        return null;
-    }
+    });
 }
 
 export async function generatePreview(itemId: string, originalExt: string): Promise<Buffer | null> {
     if (!isSafeItemId(itemId)) return null;
-    const existingJob = previewJobs.get(itemId);
-    if (existingJob) return existingJob;
-
-    const job = generatePreviewBuffer(itemId, originalExt).finally(() => {
-        previewJobs.delete(itemId);
-    });
-    previewJobs.set(itemId, job);
-    return job;
+    return generatePreviewBuffer(itemId, originalExt);
 }
 
 async function generatePreviewBuffer(itemId: string, originalExt: string): Promise<Buffer | null> {
@@ -134,6 +146,12 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
     const itemFolder = resolveItemDir(libraryPath, itemId);
     if (!itemFolder || !fs.existsSync(itemFolder)) return null;
 
+    return coordinator.generate('preview', itemId, cacheFilePath, () =>
+        producePreview(itemId, originalExt, imagesPath, itemFolder));
+}
+
+/** Renders the preview bytes; the coordinator owns caching (atomic write, invalidation fencing). */
+async function producePreview(itemId: string, originalExt: string, imagesPath: string, itemFolder: string): Promise<Buffer | null> {
     try {
         const files = (await fs.promises.readdir(itemFolder)).sort();
         const sourceFile = files.find(f => {
@@ -147,14 +165,11 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
         if (!filePath) return null;
 
         try {
-            const optimizedBuffer = await sharp(filePath)
+            return await sharp(filePath)
                 .rotate()
                 .resize({ width: 2560, withoutEnlargement: true })
                 .webp({ quality: 85 })
                 .toBuffer();
-
-            await fs.promises.writeFile(cacheFilePath, optimizedBuffer);
-            return optimizedBuffer;
 
         } catch (error: any) {
             if (error.message?.includes('unsupported image format')) {
@@ -206,7 +221,6 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
 
                         await fs.promises.rm(tempRawPreviewPath, { force: true });
 
-                        await fs.promises.writeFile(cacheFilePath, fallbackBuffer);
                         return fallbackBuffer;
                     }
                     await fs.promises.rm(tempRawPreviewPath, { force: true });
@@ -219,14 +233,11 @@ async function generatePreviewBuffer(itemId: string, originalExt: string): Promi
                 const fallbackPath = fallbackFile ? safeSourcePath(imagesPath, itemFolder, fallbackFile) : null;
 
                 if (fallbackPath) {
-                    const fallbackBuffer = await sharp(fallbackPath)
+                    return await sharp(fallbackPath)
                         .rotate()
                         .resize({ width: 2560, withoutEnlargement: true })
                         .webp({ quality: 85 })
                         .toBuffer();
-
-                    await fs.promises.writeFile(cacheFilePath, fallbackBuffer);
-                    return fallbackBuffer;
                 }
             }
 

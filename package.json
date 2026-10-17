@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "astro dev",
+    "dev": "bun --bun astro dev",
     "build": "astro build",
     "preview": "astro preview",
     "test": "bun test",

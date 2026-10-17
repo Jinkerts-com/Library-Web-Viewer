@@ -1,5 +1,5 @@
 import path from 'path';
-import { removeDatabaseFiles, SERVER_MUST_BE_STOPPED } from '../src/lib/rebuildGuard';
+import { clearDerivedCaches, removeDatabaseFiles, SERVER_MUST_BE_STOPPED } from '../src/lib/rebuildGuard';
 import { EXIT_CODES, finishCli, runScanCommand } from '../src/lib/scanLifecycle';
 
 // Exit codes: 0 success, 1 failure (including failure to remove the old database), 2 partial (some items unreadable).
@@ -8,6 +8,7 @@ async function rebuild() {
     console.log("   Eagle Web Viewer - Rebuild Database    ");
     console.log("==========================================");
     console.log("[REBUILD] NOTE: the server must be stopped before a rebuild.");
+    console.log("[REBUILD] This deletes the index database and the derived thumbnail/preview caches (db/cache) only; your library is never modified.");
 
     const dbDir = path.join(process.cwd(), "db");
 
@@ -17,6 +18,17 @@ async function rebuild() {
         console.error(`\n[REBUILD] FAILED: could not delete ${failed.file}: ${failed.message}`);
         console.error(`[REBUILD] ${SERVER_MUST_BE_STOPPED}`);
         console.error("[REBUILD] The scan was not started; the database was not rebuilt.");
+        return EXIT_CODES.FAILURE;
+    }
+
+    // Derived media caches only (thumbnails/previews): they would otherwise outlive the rebuilt index
+    const caches = clearDerivedCaches(dbDir);
+    if (caches.removed) console.log(`[REBUILD] Cleared ${caches.removed} cached thumbnail/preview file(s)`);
+    for (const skipped of caches.skipped ?? []) console.log(`[REBUILD] Skipped ${skipped}: it is a link or not a directory, so it was not emptied.`);
+    if (caches.failed) {
+        console.error(`\n[REBUILD] FAILED: could not clear ${caches.failed.file}: ${caches.failed.message}`);
+        console.error(`[REBUILD] ${SERVER_MUST_BE_STOPPED}`);
+        console.error("[REBUILD] The scan was not started; the database was wiped but cached media was not fully cleared (rerun the rebuild).");
         return EXIT_CODES.FAILURE;
     }
 

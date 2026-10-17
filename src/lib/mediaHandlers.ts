@@ -6,6 +6,7 @@ import { resolveOriginal } from './mediaPaths';
 import { getPlaceholderResponse } from './placeholder';
 import { getMimeType } from './mime';
 import { nonThrowingLogger } from './scan';
+import { contentEtag, fileEtag, isNotModified, notModifiedResponse, validatorHeaders } from './mediaCache';
 
 /**
  * Media route handlers as factories over injected dependencies, so the
@@ -32,7 +33,11 @@ function denied(decision: Extract<AccessDecision, { ok: false }>): Response {
 }
 
 export function createThumbnailHandler(
-    deps: MediaHandlerDeps & { generateThumbnail: (id: string) => Promise<Buffer | null> }
+    deps: MediaHandlerDeps & {
+        generateThumbnail: (id: string) => Promise<Buffer | null>;
+        /** Cache file mtime (epoch ms) for Last-Modified, when known. */
+        lastModified?: (id: string) => number | null;
+    }
 ): APIRoute {
     const log = nonThrowingLogger(deps.log ?? console);
     return async ({ params, request }) => {
@@ -42,11 +47,10 @@ export function createThumbnailHandler(
         try {
             const buffer = await deps.generateThumbnail(decision.item.id);
             if (!buffer) return getPlaceholderResponse();
+            const validators = { etag: contentEtag(buffer), lastModifiedMs: deps.lastModified?.(decision.item.id) ?? null };
+            if (isNotModified(request, validators)) return notModifiedResponse(validators);
             return new Response(buffer as unknown as BodyInit, {
-                headers: {
-                    "Content-Type": "image/webp",
-                    "Cache-Control": "public, max-age=31536000, immutable"
-                }
+                headers: { "Content-Type": "image/webp", ...validatorHeaders(validators) }
             });
         } catch (error) {
             log.error("[API] thumbnail error:", error);
@@ -56,7 +60,11 @@ export function createThumbnailHandler(
 }
 
 export function createPreviewHandler(
-    deps: MediaHandlerDeps & { generatePreview: (id: string, ext: string) => Promise<Buffer | null> }
+    deps: MediaHandlerDeps & {
+        generatePreview: (id: string, ext: string) => Promise<Buffer | null>;
+        /** Cache file mtime (epoch ms) for Last-Modified, when known. */
+        lastModified?: (id: string) => number | null;
+    }
 ): APIRoute {
     const log = nonThrowingLogger(deps.log ?? console);
     return async ({ params, request }) => {
@@ -66,12 +74,11 @@ export function createPreviewHandler(
         try {
             const buffer = await deps.generatePreview(decision.item.id, decision.item.ext);
             if (!buffer) return new Response("Preview unavailable", { status: 404 });
+            const validators = { etag: contentEtag(buffer), lastModifiedMs: deps.lastModified?.(decision.item.id) ?? null };
+            if (isNotModified(request, validators)) return notModifiedResponse(validators);
             return new Response(new Uint8Array(buffer), {
                 status: 200,
-                headers: {
-                    'Content-Type': 'image/webp',
-                    'Cache-Control': 'public, max-age=604800, immutable'
-                }
+                headers: { 'Content-Type': 'image/webp', ...validatorHeaders(validators) }
             });
         } catch (error) {
             log.error("[API] preview error:", error);
@@ -113,8 +120,14 @@ export function createOriginalHandler(
         if (resolved.kind !== 'ok') return new Response("Not found", { status: 404 });
 
         try {
-            const fileSize = fs.statSync(resolved.path).size;
+            const stat = fs.statSync(resolved.path);
+            const fileSize = stat.size;
             const contentType = getMimeType(path.extname(resolved.path));
+            const validators = { etag: fileEtag(stat.size, stat.mtimeMs), lastModifiedMs: stat.mtimeMs };
+            const cacheHeaders = validatorHeaders(validators);
+
+            // Conditional evaluation precedes Range handling (RFC 9110 13.2.2)
+            if (isNotModified(request, validators)) return notModifiedResponse(validators);
 
             const range = request.headers.get('range');
             const rangeMatch = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null;
@@ -133,6 +146,7 @@ export function createOriginalHandler(
                 return new Response(fs.createReadStream(resolved.path, { start, end }), {
                     status: 206,
                     headers: {
+                        ...cacheHeaders,
                         "Content-Range": `bytes ${start}-${end}/${fileSize}`,
                         "Accept-Ranges": "bytes",
                         "Content-Length": ((end - start) + 1).toString(),
@@ -145,6 +159,7 @@ export function createOriginalHandler(
             const fileBuffer = await fs.promises.readFile(resolved.path);
             return new Response(fileBuffer, {
                 headers: {
+                    ...cacheHeaders,
                     "Content-Type": contentType,
                     "Content-Length": fileSize.toString(),
                     "Accept-Ranges": "bytes"

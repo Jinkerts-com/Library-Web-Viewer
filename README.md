@@ -37,9 +37,10 @@ I am not a security expert, and this app has not been audited for security. Use 
      LIBRARY_PATH=C:\Path\To\Your\Library.library
      
      # Optional Thumbnail Settings (Default: 400 height, 80 quality)
-     # THUMBNAIL_HEIGHT=400
-     # THUMBNAIL_QUALITY=80
+     # THUMBNAIL_HEIGHT=400   # integer, 16-2000
+     # THUMBNAIL_QUALITY=80   # integer, 1-100
      ```
+     Invalid thumbnail values are ignored with a warning and the defaults are used.
 
 3. **Initialize the local database (Optional but Recommended)**:
    - Run the initial setup script to create the local SQLite database from your Eagle metadata.
@@ -47,7 +48,8 @@ I am not a security expert, and this app has not been audited for security. Use 
      bun run setup
      ```
    - *Note: If you add new images to your library later, you can run `bun run update` to sync the changes.*
-   - *Note: If you need to completely wipe and recreate the database, you can use `bun run rebuild`.*
+   - *Note: If you need to completely wipe and recreate the database, you can use `bun run rebuild`. Stop the server first: a rebuild deletes the index database and the derived thumbnail/preview caches in `db/cache` (never your library).*
+   - *Note: Media responses use private revalidation (`ETag`/`Last-Modified`, `Cache-Control: private, no-cache`). The app requests media with a `?v=<epoch>` cache-policy parameter; a browser that cached the old unversioned URLs (from before this policy) may keep those bytes until its own cache expires.*
 
 4. **Generate Thumbnails (Optional but Recommended)**:
    - For optimal performance, pre-generate thumbnails for all your images.

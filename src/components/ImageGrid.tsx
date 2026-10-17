@@ -2,9 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Masonry from 'react-masonry-css';
 import Modal from './Modal';
 import { useStore } from '@nanostores/react';
-import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore } from '../stores/libraryStore';
-import type { FilterState } from '../stores/libraryStore';
+import { filtersStore, layoutStore, zoomLevelStore, lockedFoldersStore, unlockedFoldersStore, relevantTagsStore, relevantTagCountsStore, libraryReadyStore, fetchMetadata } from '../stores/libraryStore';
+import { GridRequestController, resolveSelection } from '../lib/gridRequests';
+import type { GridState } from '../lib/gridRequests';
 import LockScreen from './LockScreen';
+import { thumbnailUrl } from '../lib/mediaUrls';
 
 // Client-side fallback when the thumbnail request itself fails; must differ
 // from the original URL so onError can't re-request the same failing endpoint.
@@ -24,6 +26,10 @@ interface Item {
     tags?: string[];
 }
 
+const INITIAL_GRID_STATE: GridState<Item> = {
+    items: [], loading: false, error: null, hasMore: true, page: 1, totalItems: null, generation: 0, enabled: true,
+};
+
 interface ImageGridProps {
     initialLayout?: string;
 }
@@ -37,11 +43,20 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
     const unlockedFolders = useStore(unlockedFoldersStore);
     const isLockedView = !!filters.folderId && lockedFolders.has(filters.folderId) && !unlockedFolders.has(filters.folderId);
 
-    const [items, setItems] = useState<Item[]>([]);
-    const [loading, setLoading] = useState(false);
-    const [page, setPage] = useState(1);
-    const [hasMore, setHasMore] = useState(true);
-    const [selectedItemIndex, setSelectedItemIndex] = useState<number | null>(null);
+    const libraryReady = useStore(libraryReadyStore);
+
+    // Request ownership, pagination and errors live in GridRequestController;
+    // this component only mirrors its state.
+    const [grid, setGrid] = useState<GridState<Item>>(INITIAL_GRID_STATE);
+    // The controller is owned by the effect run below (not by render), so its
+    // lifetime is exactly one effect instance; the ref only exposes the live one.
+    const controllerRef = useRef<GridRequestController<Item> | null>(null);
+    const { items, loading, error: gridError, hasMore } = grid;
+
+    // Modal selection is tracked by id so it can't point at a different item
+    // after the result set changes; it closes if the item is no longer present.
+    const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+    const selectedItemIndex = resolveSelection(items, selectedItemId);
 
     // Measured content width, needed to compute justified rows
     const containerRef = useRef<HTMLDivElement>(null);
@@ -58,73 +73,44 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
         return () => observer.disconnect();
     }, []);
 
-    // unlockedFolders is a dependency so any unlock/re-lock refreshes the
-    // current view (locked items appear or vanish immediately, even in "All")
+    // Every new context (filters, unlock/re-lock, lock-metadata readiness)
+    // bumps the controller's generation, aborts in-flight requests and
+    // refetches page 1. unlockedFolders is a dependency so locked items appear
+    // or vanish immediately, even in "All"; libraryReady because /api/items
+    // answers 503 until lock metadata has loaded.
+    // Each effect run creates its own controller and its cleanup disposes it
+    // (abort + invalidate), so a departing instance can never publish state or
+    // contextual tags, on unmount, context change, or Strict Mode replay.
     useEffect(() => {
-        setPage(1);
-        setItems([]);
-        setHasMore(true);
-        if (!isLockedView) fetchItems(1, filters);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [filters, unlockedFolders]);
-
-    useEffect(() => {
-        if (page > 1) {
-            fetchItems(page, filters);
-        }
-    }, [page]);
-
-
-    const fetchItems = async (pageNum: number, currentFilters: FilterState) => {
-        if (loading && pageNum > 1) return;
-        setLoading(true);
-
-        try {
-            const params = new URLSearchParams({
-                page: pageNum.toString(),
-                limit: '50',
-                sortBy: currentFilters.sortBy || 'modificationTime',
-                sortOrder: currentFilters.sortOrder || 'desc',
-                ...(currentFilters.search && { search: currentFilters.search }),
-                ...(currentFilters.folderId && { folderId: currentFilters.folderId }),
-                ...(currentFilters.specialFilter && { specialFilter: currentFilters.specialFilter }),
-                ...(currentFilters.color && { color: currentFilters.color }),
-                ...(currentFilters.colorAccuracy !== undefined && { colorAccuracy: currentFilters.colorAccuracy.toString() }),
-                recursive: currentFilters.recursive ? 'true' : 'false',
-            });
-
-            if (currentFilters.includedTags && currentFilters.includedTags.length) {
-                params.append('tag', currentFilters.includedTags.join(','));
-                if (currentFilters.tagRule === 'any') params.append('tagRule', 'any');
-            }
-            if (currentFilters.excludedTags && currentFilters.excludedTags.length) params.append('excludedTags', currentFilters.excludedTags.join(','));
-
-            const res = await fetch(`/api/items?${params.toString()}`);
-            const data = await res.json();
-
-            const newItems = data.items || [];
-            if (newItems.length < 50) setHasMore(false);
-
-            setItems(prev => pageNum === 1 ? newItems : [...prev, ...newItems]);
-
+        setSelectedItemId(null);
+        const controller = new GridRequestController<Item>({
+            fetchFn: (url, init) => fetch(url, init),
+            onChange: setGrid,
             // The API reports which tags exist in the current view context
-            if (pageNum === 1 && data.relevantTags) {
-                relevantTagsStore.set(data.relevantTags);
-                relevantTagCountsStore.set(data.relevantTagCounts || null);
-            }
-        } catch (err) {
-            console.error("Failed to fetch items", err);
-        } finally {
-            setLoading(false);
-        }
+            onContextTags: (tags, counts) => {
+                relevantTagsStore.set(tags);
+                relevantTagCountsStore.set(counts);
+            },
+        });
+        controllerRef.current = controller;
+        controller.refresh(filters, !isLockedView);
+        return () => {
+            controller.dispose();
+            if (controllerRef.current === controller) controllerRef.current = null;
+        };
+    }, [filters, unlockedFolders, libraryReady, isLockedView]);
+
+    const handleRetry = () => {
+        controllerRef.current?.retry();
+        // A not-ready library never reports ready on its own; re-check it
+        if (!libraryReady) void fetchMetadata();
     };
 
     const handleObserver = useCallback((entries: IntersectionObserverEntry[]) => {
         const target = entries[0];
-        if (target.isIntersecting && !loading && hasMore) {
-            setPage(prev => prev + 1);
-        }
-    }, [loading, hasMore]);
+        if (target.isIntersecting) controllerRef.current?.loadMore();
+        // Re-subscribes (and re-fires if still visible) when loading/error state changes
+    }, [loading, hasMore, gridError]);
 
     useEffect(() => {
         const option = {
@@ -140,23 +126,22 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
 
 
     const handleItemClick = (item: Item) => {
-        const index = items.findIndex(i => i.id === item.id);
-        if (index !== -1) {
-            setSelectedItemIndex(index);
+        if (resolveSelection(items, item.id) !== null) {
+            setSelectedItemId(item.id);
         }
     };
 
-    const handleCloseModal = () => setSelectedItemIndex(null);
+    const handleCloseModal = () => setSelectedItemId(null);
 
     const handleNext = () => {
         if (selectedItemIndex !== null && selectedItemIndex < items.length - 1) {
-            setSelectedItemIndex(selectedItemIndex + 1);
+            setSelectedItemId(items[selectedItemIndex + 1].id);
         }
     };
 
     const handlePrev = () => {
         if (selectedItemIndex !== null && selectedItemIndex > 0) {
-            setSelectedItemIndex(selectedItemIndex - 1);
+            setSelectedItemId(items[selectedItemIndex - 1].id);
         }
     };
 
@@ -215,7 +200,7 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
     const renderItem = (item: Item, index: number, rowHeight?: number) => {
         const isVideo = ['mp4', 'webm', 'mov'].includes(item.ext.toLowerCase());
         const isAudio = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(item.ext.toLowerCase());
-        let thumbUrl = `/api/thumbnail/${item.id}`;
+        const thumbUrl = thumbnailUrl(item.id);
 
         const style: React.CSSProperties = {};
 
@@ -281,6 +266,12 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
         <div ref={containerRef} className="w-full min-h-screen p-4">
             {isLockedView ? (
                 <LockScreen folderId={filters.folderId!} />
+            ) : items.length === 0 && gridError ? (
+                <div className="w-full h-[60vh] flex flex-col items-center justify-center text-zinc-500" role="alert">
+                    <h3 className="text-xl font-medium text-zinc-700 dark:text-zinc-300 mb-1">Couldn't load images</h3>
+                    <p className="text-sm mb-4">{gridError.message}</p>
+                    <button type="button" onClick={handleRetry} className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-500">Retry</button>
+                </div>
             ) : items.length === 0 && !loading ? (
                 <div className="w-full h-[60vh] flex flex-col items-center justify-center text-zinc-500">
                     <svg className="w-16 h-16 mb-4 text-zinc-300 dark:text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
@@ -316,6 +307,12 @@ export default function ImageGrid({ initialLayout = 'masonry' }: ImageGridProps)
 
             <div id="react-sentinel" className="h-10 w-full flex justify-center items-center mt-4">
                 {loading && <div className="border-4 border-zinc-200 border-t-blue-500 rounded-full w-8 h-8 animate-spin" />}
+                {gridError && items.length > 0 && (
+                    <div className="flex items-center gap-3 text-sm text-zinc-600 dark:text-zinc-400" role="alert">
+                        <span>{gridError.message}</span>
+                        <button type="button" onClick={handleRetry} className="px-3 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-500">Retry</button>
+                    </div>
+                )}
             </div>
 
             <Modal

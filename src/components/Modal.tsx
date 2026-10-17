@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useStore } from '@nanostores/react';
 import { filtersStore, tagsGroupsStore } from '../stores/libraryStore';
 import { eagleColor } from '../lib/eagleColors';
+import { originalUrl, previewUrl, thumbnailUrl } from '../lib/mediaUrls';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch';
 
@@ -100,14 +101,14 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
 
     if (!isOpen || !item) return null;
 
-    const getOriginalUrl = (itm: Item) => `/images/${itm.id}.info/${itm.name}.${itm.ext}`;
+    const getOriginalUrl = (itm: Item) => originalUrl(itm.id, itm.name, itm.ext);
 
     const getFullResUrl = (itm: Item) => {
         const supportedRenderExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg', 'bmp', 'ico'];
         if (supportedRenderExts.includes(itm.ext.toLowerCase())) {
             return getOriginalUrl(itm);
         }
-        return `/api/preview/${itm.id}`;
+        return previewUrl(itm.id);
     };
 
     const isVideo = ['mp4', 'webm', 'mov'].includes(item.ext.toLowerCase());
@@ -287,7 +288,7 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                     ) : isAudio ? (
                         <div className="flex flex-col items-center justify-center w-full h-full px-12 box-border pointer-events-auto">
                             <img
-                                src={`/api/thumbnail/${item.id}`}
+                                src={thumbnailUrl(item.id)}
                                 className="max-w-[500px] max-h-[500px] mb-10 object-contain rounded-lg shadow-2xl"
                                 alt="Cover"
                                 loading="eager"
@@ -442,7 +443,7 @@ export default function Modal({ item, nextItem, prevItem, isOpen, onClose, onNex
                         <span className="font-medium text-[15px]">{item.ext.toUpperCase()}</span>
                     </div>
                     <div className="text-sm flex flex-col">
-                        <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Created</span>
+                        <span className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-0.5">Modified</span>
                         <span className="font-medium text-[15px]">{new Date(item.modificationTime).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                     <div className="text-sm flex flex-col pt-4 border-t border-zinc-200 dark:border-zinc-800">
