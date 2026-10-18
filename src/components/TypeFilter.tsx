@@ -7,7 +7,7 @@ import { facetState, typeLabel } from '../lib/itemFacets';
 import { FacetFilterChip, FacetRow } from './FacetFilterPopover';
 
 const TypeIcon = ({ className }: { className: string }) => (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M6 2h8l4 4v16H6zM14 2v4h4" /></svg>
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M14 3H8a2 2 0 00-2 2v14a2 2 0 002 2h8a2 2 0 002-2V7l-4-4zM14 3v4h4" /></svg>
 );
 
 interface Props {
@@ -40,7 +40,6 @@ function TypePanelBody() {
             {rows.map(({ key, label }) => (
                 <FacetRow
                     key={key}
-                    icon={<TypeIcon className="w-4 h-4 text-blue-500 shrink-0" />}
                     label={label}
                     // Unavailable counts stay null; a loaded context without the type is a real 0
                     count={counts ? (Object.prototype.hasOwnProperty.call(counts, key) ? counts[key] : 0) : null}

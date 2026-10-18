@@ -151,7 +151,7 @@ export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClea
                     </div>
                     <div className="overflow-y-auto p-1.5">{children}</div>
                     <div className="px-3 py-1.5 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 text-xs text-zinc-500">
-                        Click to include. Use the minus button (or right-click / Alt-click) to exclude.
+                        Click to include. Right-click or Alt-click to exclude.
                     </div>
                 </div>
             )}
@@ -166,15 +166,13 @@ interface RowProps {
     state: FacetState;
     onToggle: () => void;
     onExclude: () => void;
-    /** Extra control after the exclude button (e.g. the Custom expander). */
+    /** Extra control after the count (e.g. the Custom expander). */
     trailing?: React.ReactNode;
     /** Content under the row (e.g. the Custom ratio editor). */
     children?: React.ReactNode;
-    /** Row icon: an <svg> with the `w-4 h-4 text-blue-500 shrink-0` classes, repeated per row like the tag bookmark. */
-    icon?: React.ReactNode;
 }
 
-export function FacetRow({ label, count, state, onToggle, onExclude, trailing, children, icon }: RowProps) {
+export function FacetRow({ label, count, state, onToggle, onExclude, trailing, children }: RowProps) {
     const excluded = state === 'excluded';
     return (
         <li
@@ -196,23 +194,12 @@ export function FacetRow({ label, count, state, onToggle, onExclude, trailing, c
                         {state === 'included' && <svg className="w-3 h-3 text-white fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>}
                         {excluded && <svg className="w-3 h-3 text-white fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>}
                     </div>
-                    {icon}
                     <span className={`text-sm flex-1 truncate ${excluded ? 'text-zinc-400 line-through' : 'text-zinc-700 dark:text-zinc-300'}`}>{label}</span>
                     {excluded && <span className="sr-only">Excluded</span>}
                 </label>
                 <span className="text-xs text-zinc-500 tabular-nums shrink-0 min-w-[2rem] text-right" aria-label={count === null ? 'count unavailable' : `${count.toLocaleString()} items`}>
                     {formatCount(count)}
                 </span>
-                <button
-                    type="button"
-                    aria-pressed={excluded}
-                    aria-label={`Exclude ${label}`}
-                    title={excluded ? 'Stop excluding' : 'Exclude'}
-                    onClick={onExclude}
-                    className={`shrink-0 p-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${excluded ? 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400' : 'text-zinc-300 dark:text-zinc-600 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
-                >
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
-                </button>
                 {trailing}
             </div>
             {children}
