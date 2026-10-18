@@ -113,9 +113,9 @@ export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClea
                 aria-controls={open ? panelId : undefined}
                 onClick={() => onOpenChange(!open)}
                 onKeyDown={e => { if (open) onEscapeKey(e); }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-medium whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${activeCount > 0 || open
-                    ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40'
-                    : 'border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${activeCount > 0 || open
+                    ? 'bg-zinc-200 dark:bg-zinc-800 text-blue-500'
+                    : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
             >
                 {icon}
                 {label}
