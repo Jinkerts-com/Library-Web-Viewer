@@ -6,6 +6,10 @@ import {
 import { SHAPE_KEYS, SHAPE_LABELS, facetState, parseCustomRatio, type ShapeKey } from '../lib/itemFacets';
 import { FacetFilterChip, FacetRow } from './FacetFilterPopover';
 
+const ShapeIcon = ({ className }: { className: string }) => (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M4 8V6a2 2 0 012-2h2M16 4h2a2 2 0 012 2v2M20 16v2a2 2 0 01-2 2h-2M8 20H6a2 2 0 01-2-2v-2" /></svg>
+);
+
 interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -48,6 +52,7 @@ function ShapePanelBody() {
                 return (
                     <FacetRow
                         key={key}
+                        icon={<ShapeIcon className="w-4 h-4 text-blue-500 shrink-0" />}
                         label={rowLabel(key)}
                         count={counts ? counts[key] : null}
                         state={facetState(sel, key)}
@@ -128,6 +133,7 @@ export default function ShapeFilter({ open, onOpenChange }: Props) {
     return (
         <FacetFilterChip
             label="Shape"
+            icon={<ShapeIcon className="w-4 h-4" />}
             activeCount={filters.includedShapes.length + filters.excludedShapes.length}
             open={open}
             onOpenChange={onOpenChange}

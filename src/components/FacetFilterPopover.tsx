@@ -48,11 +48,13 @@ interface ChipProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     onClear: () => void;
+    /** Optional decorative icon (an <svg> with `w-4 h-4`) shown before the label. */
+    icon?: React.ReactNode;
     /** Panel body; mounted only while open, so local drafts are discarded on close. */
     children: React.ReactNode;
 }
 
-export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClear, children }: ChipProps) {
+export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClear, icon, children }: ChipProps) {
     const mobile = useIsMobile();
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement | null>(null);
@@ -115,6 +117,7 @@ export function FacetFilterChip({ label, activeCount, open, onOpenChange, onClea
                     ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40'
                     : 'border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
             >
+                {icon}
                 {label}
                 {activeCount > 0 && (
                     <span className="min-w-[1.25rem] px-1 rounded-full bg-blue-600 text-white text-xs leading-5 text-center" aria-label={`${activeCount} active`}>
@@ -167,9 +170,11 @@ interface RowProps {
     trailing?: React.ReactNode;
     /** Content under the row (e.g. the Custom ratio editor). */
     children?: React.ReactNode;
+    /** Row icon: an <svg> with the `w-4 h-4 text-blue-500 shrink-0` classes, repeated per row like the tag bookmark. */
+    icon?: React.ReactNode;
 }
 
-export function FacetRow({ label, count, state, onToggle, onExclude, trailing, children }: RowProps) {
+export function FacetRow({ label, count, state, onToggle, onExclude, trailing, children, icon }: RowProps) {
     const excluded = state === 'excluded';
     return (
         <li
@@ -178,20 +183,22 @@ export function FacetRow({ label, count, state, onToggle, onExclude, trailing, c
         >
             <div className="flex items-center gap-1">
                 <label
-                    className="flex flex-1 min-w-0 items-center gap-2.5 pl-2.5 py-2 cursor-pointer select-none"
+                    className="flex flex-1 min-w-0 items-center gap-2.5 pl-2.5 py-1.5 cursor-pointer select-none"
                     onClick={e => { if (e.altKey) { e.preventDefault(); onExclude(); } }}
                 >
                     <input
                         type="checkbox"
-                        className="w-4 h-4 shrink-0 accent-blue-500"
+                        className="peer sr-only"
                         checked={state === 'included'}
                         onChange={onToggle}
                     />
-                    {excluded && (
-                        <svg className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
-                    )}
-                    <span className={`text-sm truncate ${excluded ? 'text-zinc-500 line-through' : 'text-zinc-700 dark:text-zinc-300'}`}>{label}</span>
-                    {excluded && <span className="text-xs font-medium text-red-600 dark:text-red-400">Excluded</span>}
+                    <div className={`w-4 h-4 shrink-0 border rounded flex items-center justify-center peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 peer-focus-visible:ring-offset-1 dark:peer-focus-visible:ring-offset-zinc-900 ${state === 'included' ? 'bg-blue-500 border-blue-500' : excluded ? 'bg-red-500 border-red-500' : 'border-zinc-400'}`}>
+                        {state === 'included' && <svg className="w-3 h-3 text-white fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>}
+                        {excluded && <svg className="w-3 h-3 text-white fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>}
+                    </div>
+                    {icon}
+                    <span className={`text-sm flex-1 truncate ${excluded ? 'text-zinc-400 line-through' : 'text-zinc-700 dark:text-zinc-300'}`}>{label}</span>
+                    {excluded && <span className="sr-only">Excluded</span>}
                 </label>
                 <span className="text-xs text-zinc-500 tabular-nums shrink-0 min-w-[2rem] text-right" aria-label={count === null ? 'count unavailable' : `${count.toLocaleString()} items`}>
                     {formatCount(count)}
@@ -202,9 +209,9 @@ export function FacetRow({ label, count, state, onToggle, onExclude, trailing, c
                     aria-label={`Exclude ${label}`}
                     title={excluded ? 'Stop excluding' : 'Exclude'}
                     onClick={onExclude}
-                    className={`shrink-0 p-1.5 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${excluded ? 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400' : 'text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
+                    className={`shrink-0 p-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${excluded ? 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400' : 'text-zinc-300 dark:text-zinc-600 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}
                 >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg>
                 </button>
                 {trailing}
             </div>
